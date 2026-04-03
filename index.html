@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>居家失能個案家庭醫師照護方案 — 個案追蹤管理系統</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+</head>
+<body>
+
+<!-- ===== 登入頁面 ===== -->
+<div id="login-page" class="login-page">
+  <div class="login-card">
+    <div class="login-brand">🏥</div>
+    <h2>居家失能照護</h2>
+    <p class="login-subtitle">個案追蹤管理系統</p>
+    <div id="login-error" class="login-error" style="display:none"></div>
+    <div class="form-group">
+      <label class="form-label">Email</label>
+      <input type="email" class="form-input" id="login-email" placeholder="請輸入 Email" style="width:100%">
+    </div>
+    <div class="form-group">
+      <label class="form-label">密碼</label>
+      <input type="password" class="form-input" id="login-password" placeholder="請輸入密碼" style="width:100%"
+        onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="btn btn-primary" style="width:100%;margin-top:.5rem" onclick="doLogin()">登入</button>
+    <button class="btn btn-outline" style="width:100%;margin-top:.5rem" onclick="doRegister()">首次註冊</button>
+    <p class="login-hint">首次使用請先點「首次註冊」建立帳號</p>
+  </div>
+</div>
+
+<!-- ===== 側邊欄 ===== -->
+<aside id="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-icon">🏥</div>
+    <div class="brand-text">
+      <span class="brand-title">居家失能照護</span>
+      <span class="brand-sub">個案追蹤管理系統</span>
+    </div>
+  </div>
+  <nav id="main-nav">
+    <a href="#" class="nav-item active" data-page="dashboard">
+      <span class="nav-icon">📊</span><span class="nav-label">主控儀表板</span>
+    </a>
+    <a href="#" class="nav-item" data-page="cases">
+      <span class="nav-icon">📋</span><span class="nav-label">個案管理</span>
+    </a>
+    <a href="#" class="nav-item" data-page="members">
+      <span class="nav-icon">👨‍⚕️</span><span class="nav-label">成員管理</span>
+    </a>
+    <a href="#" class="nav-item" data-page="services">
+      <span class="nav-icon">🩺</span><span class="nav-label">服務紀錄</span>
+    </a>
+    <a href="#" class="nav-item" data-page="opinion">
+      <span class="nav-icon">📄</span><span class="nav-label">醫師意見書</span>
+    </a>
+    <a href="#" class="nav-item" data-page="billing">
+      <span class="nav-icon">💰</span><span class="nav-label">費用申報</span>
+    </a>
+    <a href="#" class="nav-item" data-page="kpi">
+      <span class="nav-icon">🎯</span><span class="nav-label">KPI 績效監控</span>
+    </a>
+    <a href="#" class="nav-item" data-page="acp">
+      <span class="nav-icon">📝</span><span class="nav-label">ACP/AD 追蹤</span>
+    </a>
+    <a href="#" class="nav-item" data-page="alerts">
+      <span class="nav-icon">🔔</span><span class="nav-label">警示與待辦</span>
+      <span class="nav-badge" id="alert-badge">0</span>
+    </a>
+    <a href="#" class="nav-item" data-page="reports">
+      <span class="nav-icon">📈</span><span class="nav-label">報表匯出</span>
+    </a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="user-info">
+      <div class="user-avatar">管</div>
+      <div>
+        <div class="user-name">長照管理者</div>
+        <div class="user-role">系統管理員</div>
+      </div>
+    </div>
+    <button class="logout-btn" onclick="doLogout()">登出系統</button>
+  </div>
+</aside>
+
+<!-- ===== 主內容區 ===== -->
+<main id="main-content">
+  <header id="top-bar">
+    <button id="sidebar-toggle" class="icon-btn" title="切換側欄">☰</button>
+    <h1 id="page-title">主控儀表板</h1>
+    <div class="top-bar-actions">
+      <span class="today-date" id="today-date"></span>
+      <button class="btn btn-sm btn-outline" onclick="exportData()">匯出資料</button>
+      <button class="btn btn-sm btn-primary" onclick="importData()">匯入資料</button>
+    </div>
+  </header>
+
+  <!-- ====== Dashboard ====== -->
+  <section id="page-dashboard" class="page active">
+    <div class="stats-grid">
+      <div class="stat-card stat-primary">
+        <div class="stat-icon">👥</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-total-cases">0</div>
+          <div class="stat-label">收案中個案</div>
+        </div>
+        <div class="stat-trend up" id="trend-cases">+0 本月</div>
+      </div>
+      <div class="stat-card stat-success">
+        <div class="stat-icon">👨‍⚕️</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-total-doctors">0</div>
+          <div class="stat-label">參與醫師</div>
+        </div>
+        <div class="stat-trend" id="trend-doctors">平均 0 案/醫師</div>
+      </div>
+      <div class="stat-card stat-warning">
+        <div class="stat-icon">📄</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-opinion-due">0</div>
+          <div class="stat-label">意見書待更新</div>
+        </div>
+        <div class="stat-trend warn">30天內到期</div>
+      </div>
+      <div class="stat-card stat-danger">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-alerts">0</div>
+          <div class="stat-label">逾期警示</div>
+        </div>
+        <div class="stat-trend danger">需立即處理</div>
+      </div>
+    </div>
+
+    <div class="dashboard-grid">
+      <div class="card card-lg">
+        <div class="card-header">
+          <h3>KPI 績效總覽</h3>
+          <span class="card-subtitle">依計畫評核指標</span>
+        </div>
+        <div class="card-body">
+          <div class="kpi-bars" id="dashboard-kpi-bars"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <h3>醫師案量負荷</h3>
+          <span class="card-subtitle">上限 200 案/醫師</span>
+        </div>
+        <div class="card-body">
+          <div id="doctor-load-chart"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <h3>近期服務紀錄</h3>
+          <span class="card-subtitle">最近 7 筆</span>
+        </div>
+        <div class="card-body">
+          <div id="recent-services-list"></div>
+        </div>
+      </div>
+      <div class="card card-lg">
+        <div class="card-header">
+          <h3>待辦事項與警示</h3>
+          <a href="#" class="card-link" data-page="alerts">查看全部 →</a>
+        </div>
+        <div class="card-body">
+          <div id="dashboard-alerts-list"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== 個案管理 ====== -->
+  <section id="page-cases" class="page">
+    <div class="page-toolbar">
+      <div class="toolbar-left">
+        <input type="text" class="form-input search-input" id="case-search" placeholder="搜尋個案姓名、身分證字號...">
+        <select class="form-select" id="case-filter-status">
+          <option value="">全部狀態</option>
+          <option value="active">收案中</option>
+          <option value="closed">已結案</option>
+        </select>
+        <select class="form-select" id="case-filter-level">
+          <option value="">全部等級</option>
+          <option value="2">第2級</option><option value="3">第3級</option>
+          <option value="4">第4級</option><option value="5">第5級</option>
+          <option value="6">第6級</option><option value="7">第7級</option>
+          <option value="8">第8級</option>
+        </select>
+        <select class="form-select" id="case-filter-doctor">
+          <option value="">全部醫師</option>
+        </select>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-primary" onclick="openCaseModal()">＋ 新增個案</button>
+      </div>
+    </div>
+    <div class="table-container">
+      <table class="data-table" id="cases-table">
+        <thead>
+          <tr>
+            <th>個案編號</th><th>姓名</th><th>年齡</th><th>CMS等級</th>
+            <th>負責醫師</th><th>個管師</th><th>意見書狀態</th>
+            <th>本月服務</th><th>狀態</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="cases-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ====== 成員管理 ====== -->
+  <section id="page-members" class="page">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="doctors" onclick="switchMemberTab('doctors')">醫師</button>
+      <button class="tab-btn" data-tab="nurses" onclick="switchMemberTab('nurses')">個案管理師</button>
+    </div>
+    <div class="page-toolbar">
+      <div class="toolbar-left">
+        <input type="text" class="form-input search-input" id="member-search" placeholder="搜尋成員姓名...">
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-primary" onclick="openMemberModal()">＋ 新增成員</button>
+      </div>
+    </div>
+    <div class="table-container">
+      <table class="data-table" id="members-table">
+        <thead>
+          <tr>
+            <th>姓名</th><th>職稱</th><th>專科</th><th>收案數</th>
+            <th>上限</th><th>負荷率</th><th>ACP訓練</th><th>意見書訓練</th>
+            <th>狀態</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="members-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ====== 服務紀錄 ====== -->
+  <section id="page-services" class="page">
+    <div class="page-toolbar">
+      <div class="toolbar-left">
+        <input type="text" class="form-input search-input" id="service-search" placeholder="搜尋個案姓名...">
+        <select class="form-select" id="service-filter-type">
+          <option value="">全部形式</option>
+          <option value="home">家訪</option>
+          <option value="phone">電訪</option>
+          <option value="video">遠距視訊</option>
+        </select>
+        <input type="month" class="form-input" id="service-filter-month">
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-primary" onclick="openServiceModal()">＋ 新增服務紀錄</button>
+      </div>
+    </div>
+    <div class="table-container">
+      <table class="data-table" id="services-table">
+        <thead>
+          <tr>
+            <th>日期</th><th>個案</th><th>服務形式</th><th>受訪者</th>
+            <th>個管師</th><th>血壓</th><th>血糖</th><th>血脂</th>
+            <th>衛教</th><th>ACP說明</th><th>申報狀態</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="services-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ====== 醫師意見書 ====== -->
+  <section id="page-opinion" class="page">
+    <div class="page-toolbar">
+      <div class="toolbar-left">
+        <input type="text" class="form-input search-input" id="opinion-search" placeholder="搜尋個案姓名...">
+        <select class="form-select" id="opinion-filter-status">
+          <option value="">全部狀態</option>
+          <option value="valid">有效</option>
+          <option value="expiring">即將到期</option>
+          <option value="expired">已過期</option>
+          <option value="pending">待開立</option>
+        </select>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-primary" onclick="openOpinionModal()">＋ 開立意見書</button>
+      </div>
+    </div>
+    <div class="opinion-summary" id="opinion-summary"></div>
+    <div class="table-container">
+      <table class="data-table" id="opinion-table">
+        <thead>
+          <tr>
+            <th>個案</th><th>開立醫師</th><th>開立日期</th><th>次數</th>
+            <th>家訪日期</th><th>到期日</th><th>剩餘天數</th>
+            <th>病情狀態</th><th>年度次數</th><th>狀態</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="opinion-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ====== 費用申報 ====== -->
+  <section id="page-billing" class="page">
+    <div class="billing-summary" id="billing-summary"></div>
+    <div class="page-toolbar">
+      <div class="toolbar-left">
+        <input type="month" class="form-input" id="billing-month">
+        <select class="form-select" id="billing-filter-code">
+          <option value="">全部組合</option>
+          <option value="AA12">AA12 醫師意見書</option>
+          <option value="YA01">YA01 電訪/視訊管理費</option>
+          <option value="YA02">YA02 家訪訪視費</option>
+          <option value="YA03">YA03 原民離島電訪/視訊</option>
+          <option value="YA04">YA04 原民離島家訪</option>
+        </select>
+        <select class="form-select" id="billing-filter-status">
+          <option value="">全部狀態</option>
+          <option value="pending">待申報</option>
+          <option value="submitted">已申報</option>
+          <option value="approved">已核付</option>
+          <option value="rejected">退件</option>
+        </select>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-outline" onclick="generateBilling()">產生申報清冊</button>
+        <button class="btn btn-primary" onclick="submitBilling()">批次申報</button>
+      </div>
+    </div>
+    <div class="table-container">
+      <table class="data-table" id="billing-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="billing-check-all" onchange="toggleBillingAll(this)"></th>
+            <th>申報月份</th><th>個案</th><th>組合代碼</th><th>服務日期</th>
+            <th>醫師/個管師</th><th>金額</th><th>狀態</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="billing-tbody"></tbody>
+      </table>
+    </div>
+    <div class="billing-total" id="billing-total"></div>
+  </section>
+
+  <!-- ====== KPI 績效 ====== -->
+  <section id="page-kpi" class="page">
+    <div class="page-toolbar">
+      <div class="toolbar-left">
+        <select class="form-select" id="kpi-year">
+          <option value="2024">113年度</option>
+          <option value="2023" selected>112年度</option>
+        </select>
+        <select class="form-select" id="kpi-filter-doctor">
+          <option value="">全院彙總</option>
+        </select>
+      </div>
+    </div>
+    <div class="kpi-grid" id="kpi-detail-grid"></div>
+    <div class="card" style="margin-top:1.5rem">
+      <div class="card-header"><h3>各醫師 KPI 達成明細</h3></div>
+      <div class="card-body">
+        <table class="data-table" id="kpi-doctor-table">
+          <thead>
+            <tr>
+              <th>醫師</th><th>收案數</th><th>血壓測量率</th><th>血糖監測率</th>
+              <th>血脂監測率</th><th>ACP訓練</th><th>ACP/AD完成率</th><th>綜合達標</th>
+            </tr>
+          </thead>
+          <tbody id="kpi-doctor-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== ACP/AD ====== -->
+  <section id="page-acp" class="page">
+    <div class="acp-summary" id="acp-summary"></div>
+    <div class="page-toolbar">
+      <div class="toolbar-left">
+        <input type="text" class="form-input search-input" id="acp-search" placeholder="搜尋個案姓名...">
+        <select class="form-select" id="acp-filter">
+          <option value="">全部狀態</option>
+          <option value="not_started">未說明</option>
+          <option value="explained">已說明</option>
+          <option value="signed">已簽署</option>
+          <option value="registered">已健保卡註記</option>
+        </select>
+      </div>
+    </div>
+    <div class="table-container">
+      <table class="data-table" id="acp-table">
+        <thead>
+          <tr>
+            <th>個案</th><th>負責醫師</th><th>收案日期</th><th>收案滿6月</th>
+            <th>ACP說明</th><th>AD說明</th><th>ACP簽署</th>
+            <th>健保卡註記</th><th>家屬說明</th><th>狀態</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="acp-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ====== 警示待辦 ====== -->
+  <section id="page-alerts" class="page">
+    <div class="alert-categories" id="alert-categories"></div>
+    <div class="alerts-list" id="alerts-full-list"></div>
+  </section>
+
+  <!-- ====== 報表匯出 ====== -->
+  <section id="page-reports" class="page">
+    <div class="reports-grid">
+      <div class="report-card" onclick="generateReport('monthly')">
+        <div class="report-icon">📊</div>
+        <h4>月報表</h4>
+        <p>含服務量、費用申報、KPI達成等月度統計</p>
+      </div>
+      <div class="report-card" onclick="generateReport('quarterly')">
+        <div class="report-icon">📈</div>
+        <h4>季報表</h4>
+        <p>跨專業討論會議成果報告</p>
+      </div>
+      <div class="report-card" onclick="generateReport('annual')">
+        <div class="report-icon">📋</div>
+        <h4>年度評核報告</h4>
+        <p>依計畫評核指標產出年度績效報告</p>
+      </div>
+      <div class="report-card" onclick="generateReport('case_list')">
+        <div class="report-icon">👥</div>
+        <h4>個案清冊</h4>
+        <p>含所有收案個案詳細資料</p>
+      </div>
+      <div class="report-card" onclick="generateReport('billing_summary')">
+        <div class="report-icon">💰</div>
+        <h4>費用申報彙總</h4>
+        <p>依月份、組合代碼彙總申報金額</p>
+      </div>
+      <div class="report-card" onclick="generateReport('member_performance')">
+        <div class="report-icon">🎯</div>
+        <h4>成員績效報告</h4>
+        <p>各醫師/個管師服務量與KPI達成</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ====== Modal ====== -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <h3 id="modal-title"></h3>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImport(event)">
+
+<script src="firebase-config.js"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
