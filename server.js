@@ -593,6 +593,11 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
   }
 });
 
+// cases-data.js 不在 git 中（含個資），提供空白 fallback
+app.get('/cases-data.js', (req, res) => {
+  res.type('application/javascript').send('const RAW_CASES_DATA = [];');
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
