@@ -209,3 +209,76 @@ function saveDB(data) {
     }
   });
 }
+
+// ===== 手動同步到雲端 =====
+async function syncToCloud() {
+  const btn = document.getElementById('btn-sync-cloud');
+  if (!firebase.auth().currentUser) {
+    alert('請先登入再同步');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '☁ 同步中...';
+
+  try {
+    // 確保本地有資料
+    if (!db || !db.cases || db.cases.length === 0) {
+      db = generateDemoData();
+      saveDB_local(db);
+    }
+
+    // 清除舊的雲端資料
+    btn.textContent = '☁ 清除舊資料...';
+    for (const col of COLLECTIONS) {
+      const snapshot = await fsdb.collection(col).get();
+      const docs = snapshot.docs;
+      for (let i = 0; i < docs.length; i += 400) {
+        const batch = fsdb.batch();
+        docs.slice(i, i + 400).forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+      }
+    }
+
+    // 上傳新資料
+    let uploaded = 0;
+    const totalItems = COLLECTIONS.reduce((sum, col) => sum + (db[col] || []).length, 0);
+
+    for (const col of COLLECTIONS) {
+      const items = db[col] || [];
+      for (let i = 0; i < items.length; i += 400) {
+        const batch = fsdb.batch();
+        const chunk = items.slice(i, i + 400);
+        chunk.forEach(item => {
+          const docRef = fsdb.collection(col).doc(item.id);
+          batch.set(docRef, item);
+        });
+        await batch.commit();
+        uploaded += chunk.length;
+        btn.textContent = `☁ 上傳中 ${Math.round(uploaded / totalItems * 100)}%`;
+      }
+    }
+
+    // 更新版本標記
+    await fsdb.collection('system').doc('meta').set({
+      initialized: true,
+      dataVersion: DB_VERSION,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+
+    btn.textContent = '☁ 同步完成 ✓';
+    btn.style.background = '#2196F3';
+    alert(`雲端同步完成！\n${db.cases.length} 個案、${db.members.length} 成員、${db.services.length} 服務紀錄已上傳到 Firebase`);
+  } catch (err) {
+    console.error('同步失敗:', err);
+    btn.textContent = '☁ 同步失敗 ✗';
+    btn.style.background = '#f44336';
+    alert('同步失敗: ' + err.message);
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = '☁ 同步到雲端';
+      btn.style.background = '#4CAF50';
+    }, 3000);
+  }
+}
