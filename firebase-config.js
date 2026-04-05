@@ -96,21 +96,34 @@ const COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
 
 async function loadCloudData() {
   try {
-    // 檢查雲端是否有資料
     const metaDoc = await fsdb.collection('system').doc('meta').get();
+    const cloudVersion = metaDoc.exists ? (metaDoc.data().dataVersion || null) : null;
 
-    if (!metaDoc.exists) {
-      // 首次使用：產生 demo 資料並上傳到雲端
-      console.log('首次使用，初始化雲端資料...');
+    if (!metaDoc.exists || cloudVersion !== DB_VERSION) {
+      // 版本不符或首次使用：清除舊雲端資料，重新上傳真實資料
+      console.log(`雲端資料版本不符 (${cloudVersion} → ${DB_VERSION})，重新初始化...`);
+
+      // 分批刪除舊的雲端資料 (Firestore batch limit = 500)
+      for (const col of COLLECTIONS) {
+        const snapshot = await fsdb.collection(col).get();
+        const docs = snapshot.docs;
+        for (let i = 0; i < docs.length; i += 400) {
+          const batch = fsdb.batch();
+          docs.slice(i, i + 400).forEach(doc => batch.delete(doc.ref));
+          await batch.commit();
+        }
+      }
+
       db = generateDemoData();
       await uploadAllData(db);
       await fsdb.collection('system').doc('meta').set({
         initialized: true,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        dataVersion: DB_VERSION,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
-      console.log('雲端資料初始化完成');
+      console.log(`雲端資料初始化完成: ${db.cases.length} 個案, ${db.members.length} 成員`);
     } else {
-      // 從雲端載入資料
+      // 版本一致，從雲端載入資料
       console.log('從雲端載入資料...');
       db = { members: [], cases: [], opinions: [], services: [], billings: [], diseases: [] };
 
