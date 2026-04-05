@@ -28,7 +28,7 @@ function initNav() {
 const pageTitles = {
   dashboard: '主控儀表板', cases: '個案管理', members: '成員管理',
   services: '服務紀錄', opinion: '醫師意見書', billing: '費用申報',
-  kpi: 'KPI 績效監控', acp: 'ACP/AD 追蹤', alerts: '警示與待辦', reports: '報表匯出'
+  kpi: 'KPI 績效監控', acp: 'ACP/AD 追蹤', alerts: '警示與待辦', reports: '報表匯出', users: '使用者管理'
 };
 
 function switchPage(page) {
@@ -43,7 +43,7 @@ function switchPage(page) {
   const renderers = {
     dashboard: renderDashboard, cases: renderCases, members: renderMembers,
     services: renderServices, opinion: renderOpinions, billing: renderBilling,
-    kpi: renderKPI, acp: renderACP, alerts: renderAlerts
+    kpi: renderKPI, acp: renderACP, alerts: renderAlerts, users: renderUserManagement
   };
   if (renderers[page]) renderers[page]();
 }

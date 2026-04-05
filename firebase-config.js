@@ -1,5 +1,7 @@
 /* ========================================
-   Firebase 初始化與雲端資料層
+   認證與雲端資料層
+   - 登入/登出：自訂後台 API
+   - 資料同步：Firebase Firestore
    ======================================== */
 
 const firebaseConfig = {
@@ -12,49 +14,48 @@ const firebaseConfig = {
 };
 
 firebase.initializeApp(firebaseConfig);
-
-const auth = firebase.auth();
 const fsdb = firebase.firestore();
 
-// ===== 登入/註冊/登出 =====
-function doLogin() {
-  const email = document.getElementById('login-email').value.trim();
-  const pw = document.getElementById('login-password').value;
-  if (!email || !pw) { showLoginError('請輸入 Email 和密碼'); return; }
+// ===== Session 管理 =====
+let currentUser = null;
+let authToken = localStorage.getItem('auth_token');
 
-  auth.signInWithEmailAndPassword(email, pw)
-    .then(() => { /* onAuthStateChanged 會處理 */ })
-    .catch(err => {
-      const msgs = {
-        'auth/user-not-found': '此帳號不存在，請先註冊',
-        'auth/wrong-password': '密碼錯誤',
-        'auth/invalid-email': 'Email 格式不正確',
-        'auth/invalid-credential': '帳號或密碼錯誤',
-      };
-      showLoginError(msgs[err.code] || err.message);
-    });
+async function apiCall(method, url, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '請求失敗');
+  return data;
 }
 
-function doRegister() {
-  const email = document.getElementById('login-email').value.trim();
+// ===== 登入/登出 =====
+async function doLogin() {
+  const username = document.getElementById('login-username').value.trim();
   const pw = document.getElementById('login-password').value;
-  if (!email || !pw) { showLoginError('請輸入 Email 和密碼'); return; }
-  if (pw.length < 6) { showLoginError('密碼至少需要 6 個字元'); return; }
+  if (!username || !pw) { showLoginError('請輸入帳號和密碼'); return; }
 
-  auth.createUserWithEmailAndPassword(email, pw)
-    .then(() => { /* onAuthStateChanged 會處理 */ })
-    .catch(err => {
-      const msgs = {
-        'auth/email-already-in-use': '此 Email 已註冊，請直接登入',
-        'auth/weak-password': '密碼強度不足，至少 6 個字元',
-        'auth/invalid-email': 'Email 格式不正確',
-      };
-      showLoginError(msgs[err.code] || err.message);
-    });
+  try {
+    const data = await apiCall('POST', '/api/login', { username, password: pw });
+    authToken = data.token;
+    currentUser = data.user;
+    localStorage.setItem('auth_token', authToken);
+    onLoginSuccess();
+  } catch (err) {
+    showLoginError(err.message);
+  }
 }
 
 function doLogout() {
-  auth.signOut();
+  apiCall('POST', '/api/logout').catch(() => {});
+  authToken = null;
+  currentUser = null;
+  localStorage.removeItem('auth_token');
+  document.getElementById('login-page').style.display = 'flex';
+  document.getElementById('sidebar').style.display = 'none';
+  document.getElementById('main-content').style.display = 'none';
+  document.getElementById('login-password').value = '';
 }
 
 function showLoginError(msg) {
@@ -63,31 +64,42 @@ function showLoginError(msg) {
   el.style.display = 'block';
 }
 
-// ===== 監聽登入狀態 =====
-auth.onAuthStateChanged(user => {
-  if (user) {
-    // 已登入 → 隱藏登入頁，顯示主系統
-    document.getElementById('login-page').style.display = 'none';
-    document.getElementById('sidebar').style.display = 'flex';
-    document.getElementById('main-content').style.display = 'flex';
+function onLoginSuccess() {
+  document.getElementById('login-page').style.display = 'none';
+  document.getElementById('sidebar').style.display = 'flex';
+  document.getElementById('main-content').style.display = 'flex';
+  document.getElementById('login-error').style.display = 'none';
 
-    // 更新使用者資訊
-    const nameEl = document.querySelector('.user-name');
-    if (nameEl) nameEl.textContent = user.email.split('@')[0];
+  // 更新使用者資訊
+  const nameEl = document.querySelector('.user-name');
+  if (nameEl) nameEl.textContent = currentUser.displayName;
+  const roleEl = document.querySelector('.user-role');
+  if (roleEl) roleEl.textContent = currentUser.role === 'admin' ? '系統管理員' : '一般使用者';
 
-    // 載入雲端資料
-    loadCloudData().then(() => {
-      initNav();
-      initFilters();
-      renderDashboard();
-      updateAlertBadge();
-      document.getElementById('today-date').textContent = formatDateCN(new Date());
-    });
-  } else {
-    // 未登入 → 顯示登入頁
-    document.getElementById('login-page').style.display = 'flex';
-    document.getElementById('sidebar').style.display = 'none';
-    document.getElementById('main-content').style.display = 'none';
+  // 管理員才顯示「使用者管理」
+  const adminNav = document.getElementById('nav-users');
+  if (adminNav) adminNav.style.display = currentUser.role === 'admin' ? '' : 'none';
+
+  // 載入資料
+  loadCloudData().then(() => {
+    initNav();
+    initFilters();
+    renderDashboard();
+    updateAlertBadge();
+    document.getElementById('today-date').textContent = formatDateCN(new Date());
+  });
+}
+
+// ===== 頁面載入時嘗試自動登入 =====
+document.addEventListener('DOMContentLoaded', async () => {
+  if (authToken) {
+    try {
+      currentUser = await apiCall('GET', '/api/me');
+      onLoginSuccess();
+    } catch (e) {
+      localStorage.removeItem('auth_token');
+      authToken = null;
+    }
   }
 });
 
@@ -101,7 +113,6 @@ async function loadCloudData() {
     const needsInit = !metaDoc.exists || cloudVersion !== DB_VERSION;
 
     if (!needsInit) {
-      // 版本一致，嘗試從雲端載入
       console.log('從雲端載入資料...');
       db = { members: [], cases: [], opinions: [], services: [], billings: [], diseases: [] };
       for (const col of COLLECTIONS) {
@@ -110,7 +121,6 @@ async function loadCloudData() {
       }
       console.log(`雲端資料載入: ${db.cases.length} 個案, ${db.members.length} 成員`);
 
-      // 安全檢查：雲端資料為空但本地有真實資料 → 重新初始化
       if (db.cases.length === 0 && typeof RAW_CASES_DATA !== 'undefined' && RAW_CASES_DATA.length > 0) {
         console.warn('雲端資料為空，重新從本地清冊初始化...');
         db = generateDemoData();
@@ -121,16 +131,13 @@ async function loadCloudData() {
     }
 
     if (needsInit) {
-      // 版本不符或首次使用：用本地真實資料初始化
       console.log(`雲端資料版本不符 (${cloudVersion} → ${DB_VERSION})，重新初始化...`);
       db = generateDemoData();
       saveDB_local(db);
       console.log(`本地資料已就緒: ${db.cases.length} 個案, ${db.members.length} 成員`);
 
-      // 背景上傳到雲端（不阻塞頁面載入）
       (async () => {
         try {
-          // 分批刪除舊資料
           for (const col of COLLECTIONS) {
             const snapshot = await fsdb.collection(col).get();
             const docs = snapshot.docs;
@@ -153,7 +160,6 @@ async function loadCloudData() {
       })();
     }
 
-    // 同步到 localStorage
     saveDB_local(db);
   } catch (err) {
     console.error('雲端載入失敗，使用本地資料:', err);
@@ -162,7 +168,6 @@ async function loadCloudData() {
   }
 }
 
-// 只存 localStorage，不觸發雲端同步
 function saveDB_local(data) {
   localStorage.setItem(DB_KEY, JSON.stringify(data));
   localStorage.setItem(DB_VERSION_KEY, DB_VERSION);
@@ -171,10 +176,9 @@ function saveDB_local(data) {
 async function uploadAllData(data) {
   for (const col of COLLECTIONS) {
     const items = data[col] || [];
-    const batch_size = 400; // Firestore batch limit is 500
-    for (let i = 0; i < items.length; i += batch_size) {
+    for (let i = 0; i < items.length; i += 400) {
       const batch = fsdb.batch();
-      const chunk = items.slice(i, i + batch_size);
+      const chunk = items.slice(i, i + 400);
       chunk.forEach(item => {
         const docRef = fsdb.collection(col).doc(item.id);
         batch.set(docRef, item);
@@ -184,20 +188,9 @@ async function uploadAllData(data) {
   }
 }
 
-// ===== 覆寫 saveDB：同時存雲端 =====
-const _originalSaveDB = typeof saveDB === 'function' ? saveDB : null;
-
-function saveToCloud(collection, item) {
-  if (!item || !item.id) return;
-  fsdb.collection(collection).doc(item.id).set(item, { merge: true })
-    .catch(err => console.error('雲端儲存失敗:', err));
-}
-
-// 包裝 saveDB，存本地同時存雲端
+// ===== 覆寫 saveDB =====
 function saveDB(data) {
   localStorage.setItem(DB_KEY, JSON.stringify(data));
-
-  // 差異同步到雲端（只更新有改動的資料）
   COLLECTIONS.forEach(col => {
     if (data[col]) {
       data[col].forEach(item => {
@@ -213,22 +206,17 @@ function saveDB(data) {
 // ===== 手動同步到雲端 =====
 async function syncToCloud() {
   const btn = document.getElementById('btn-sync-cloud');
-  if (!firebase.auth().currentUser) {
-    alert('請先登入再同步');
-    return;
-  }
+  if (!currentUser) { alert('請先登入再同步'); return; }
 
   btn.disabled = true;
   btn.textContent = '☁ 同步中...';
 
   try {
-    // 確保本地有資料
     if (!db || !db.cases || db.cases.length === 0) {
       db = generateDemoData();
       saveDB_local(db);
     }
 
-    // 清除舊的雲端資料
     btn.textContent = '☁ 清除舊資料...';
     for (const col of COLLECTIONS) {
       const snapshot = await fsdb.collection(col).get();
@@ -240,10 +228,8 @@ async function syncToCloud() {
       }
     }
 
-    // 上傳新資料
     let uploaded = 0;
     const totalItems = COLLECTIONS.reduce((sum, col) => sum + (db[col] || []).length, 0);
-
     for (const col of COLLECTIONS) {
       const items = db[col] || [];
       for (let i = 0; i < items.length; i += 400) {
@@ -259,7 +245,6 @@ async function syncToCloud() {
       }
     }
 
-    // 更新版本標記
     await fsdb.collection('system').doc('meta').set({
       initialized: true,
       dataVersion: DB_VERSION,
@@ -268,7 +253,7 @@ async function syncToCloud() {
 
     btn.textContent = '☁ 同步完成 ✓';
     btn.style.background = '#2196F3';
-    alert(`雲端同步完成！\n${db.cases.length} 個案、${db.members.length} 成員、${db.services.length} 服務紀錄已上傳到 Firebase`);
+    alert(`雲端同步完成！\n${db.cases.length} 個案、${db.members.length} 成員、${db.services.length} 服務紀錄已上傳`);
   } catch (err) {
     console.error('同步失敗:', err);
     btn.textContent = '☁ 同步失敗 ✗';
@@ -280,5 +265,169 @@ async function syncToCloud() {
       btn.textContent = '☁ 同步到雲端';
       btn.style.background = '#4CAF50';
     }, 3000);
+  }
+}
+
+// ===== 使用者管理 (管理員) =====
+async function renderUserManagement() {
+  const container = document.getElementById('page-users');
+  if (!container) return;
+  if (!currentUser || currentUser.role !== 'admin') {
+    container.innerHTML = '<p>無權限存取</p>';
+    return;
+  }
+
+  try {
+    const users = await apiCall('GET', '/api/users');
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h3>使用者管理</h3>
+          <button class="btn btn-sm btn-primary" onclick="openAddUserModal()">+ 新增使用者</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>帳號</th><th>顯示名稱</th><th>角色</th><th>狀態</th><th>建立時間</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${users.map(u => `
+              <tr>
+                <td><strong>${u.username}</strong></td>
+                <td>${u.displayName}</td>
+                <td><span class="badge ${u.role === 'admin' ? 'badge-danger' : 'badge-info'}">${u.role === 'admin' ? '管理員' : '使用者'}</span></td>
+                <td><span class="badge ${u.status === 'active' ? 'badge-success' : 'badge-warning'}">${u.status === 'active' ? '啟用' : '停用'}</span></td>
+                <td>${u.createdAt ? u.createdAt.substring(0, 10) : '-'}</td>
+                <td>
+                  <button class="btn btn-sm btn-outline" onclick="openEditUserModal('${u.id}','${u.username}','${u.displayName}','${u.role}','${u.status}')">編輯</button>
+                  ${u.username !== '蕭輝哲' ? `<button class="btn btn-sm btn-outline" style="color:red;border-color:red" onclick="deleteUser('${u.id}','${u.username}')">刪除</button>` : ''}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p style="color:red">載入失敗: ${err.message}</p>`;
+  }
+}
+
+function openAddUserModal() {
+  document.getElementById('modal-title').textContent = '新增使用者';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="form-group">
+      <label class="form-label">帳號 *</label>
+      <input class="form-input" id="f-new-username" placeholder="登入帳號">
+    </div>
+    <div class="form-group">
+      <label class="form-label">密碼 *</label>
+      <input class="form-input" id="f-new-password" type="password" placeholder="登入密碼">
+    </div>
+    <div class="form-group">
+      <label class="form-label">顯示名稱</label>
+      <input class="form-input" id="f-new-displayname" placeholder="側欄顯示的名稱">
+    </div>
+    <div class="form-group">
+      <label class="form-label">角色</label>
+      <select class="form-input" id="f-new-role">
+        <option value="user">一般使用者</option>
+        <option value="admin">管理員</option>
+      </select>
+    </div>
+  `;
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    <button class="btn btn-primary" onclick="addUser()">新增</button>
+  `;
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+async function addUser() {
+  const username = document.getElementById('f-new-username').value.trim();
+  const password = document.getElementById('f-new-password').value;
+  const displayName = document.getElementById('f-new-displayname').value.trim() || username;
+  const role = document.getElementById('f-new-role').value;
+
+  if (!username || !password) { alert('帳號和密碼為必填'); return; }
+
+  try {
+    await apiCall('POST', '/api/users', { username, password, displayName, role });
+    closeModal();
+    renderUserManagement();
+    showToast('使用者已新增');
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function openEditUserModal(id, username, displayName, role, status) {
+  document.getElementById('modal-title').textContent = '編輯使用者 - ' + username;
+  document.getElementById('modal-body').innerHTML = `
+    <input type="hidden" id="f-edit-id" value="${id}">
+    <div class="form-group">
+      <label class="form-label">帳號</label>
+      <input class="form-input" id="f-edit-username" value="${username}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">新密碼 (留空不修改)</label>
+      <input class="form-input" id="f-edit-password" type="password" placeholder="不修改請留空">
+    </div>
+    <div class="form-group">
+      <label class="form-label">顯示名稱</label>
+      <input class="form-input" id="f-edit-displayname" value="${displayName}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">角色</label>
+      <select class="form-input" id="f-edit-role">
+        <option value="user" ${role === 'user' ? 'selected' : ''}>一般使用者</option>
+        <option value="admin" ${role === 'admin' ? 'selected' : ''}>管理員</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">狀態</label>
+      <select class="form-input" id="f-edit-status">
+        <option value="active" ${status === 'active' ? 'selected' : ''}>啟用</option>
+        <option value="disabled" ${status !== 'active' ? 'selected' : ''}>停用</option>
+      </select>
+    </div>
+  `;
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    <button class="btn btn-primary" onclick="updateUser()">儲存</button>
+  `;
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+async function updateUser() {
+  const id = document.getElementById('f-edit-id').value;
+  const body = {
+    username: document.getElementById('f-edit-username').value.trim(),
+    displayName: document.getElementById('f-edit-displayname').value.trim(),
+    role: document.getElementById('f-edit-role').value,
+    status: document.getElementById('f-edit-status').value,
+  };
+  const pw = document.getElementById('f-edit-password').value;
+  if (pw) body.password = pw;
+
+  try {
+    await apiCall('PUT', '/api/users/' + id, body);
+    closeModal();
+    renderUserManagement();
+    showToast('使用者已更新');
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function deleteUser(id, username) {
+  if (!confirm(`確定刪除使用者「${username}」？`)) return;
+  try {
+    await apiCall('DELETE', '/api/users/' + id);
+    renderUserManagement();
+    showToast('使用者已刪除');
+  } catch (err) {
+    alert(err.message);
   }
 }

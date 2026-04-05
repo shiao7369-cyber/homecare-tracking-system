@@ -19,8 +19,8 @@
     <p class="login-subtitle">個案追蹤管理系統</p>
     <div id="login-error" class="login-error" style="display:none"></div>
     <div class="form-group">
-      <label class="form-label">Email</label>
-      <input type="email" class="form-input" id="login-email" placeholder="請輸入 Email" style="width:100%">
+      <label class="form-label">帳號</label>
+      <input type="text" class="form-input" id="login-username" placeholder="請輸入帳號" style="width:100%">
     </div>
     <div class="form-group">
       <label class="form-label">密碼</label>
@@ -28,8 +28,7 @@
         onkeydown="if(event.key==='Enter')doLogin()">
     </div>
     <button class="btn btn-primary" style="width:100%;margin-top:.5rem" onclick="doLogin()">登入</button>
-    <button class="btn btn-outline" style="width:100%;margin-top:.5rem" onclick="doRegister()">首次註冊</button>
-    <p class="login-hint">首次使用請先點「首次註冊」建立帳號</p>
+    <p class="login-hint">請使用管理員提供的帳號密碼登入</p>
   </div>
 </div>
 
@@ -73,6 +72,9 @@
     </a>
     <a href="#" class="nav-item" data-page="reports">
       <span class="nav-icon">📈</span><span class="nav-label">報表匯出</span>
+    </a>
+    <a href="#" class="nav-item" data-page="users" id="nav-users" style="display:none">
+      <span class="nav-icon">👥</span><span class="nav-label">使用者管理</span>
     </a>
   </nav>
   <div class="sidebar-footer">
@@ -457,6 +459,9 @@
     </div>
   </section>
 </main>
+
+  <!-- ====== Users Management ====== -->
+  <section id="page-users" class="page"></section>
 
 <!-- ====== Modal ====== -->
 <div class="modal-overlay" id="modal-overlay">
