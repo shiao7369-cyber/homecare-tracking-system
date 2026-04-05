@@ -24,6 +24,11 @@ function escCSV(val) {
   return s;
 }
 
+function debounce(fn, delay = 300) {
+  let timer;
+  return function(...args) { clearTimeout(timer); timer = setTimeout(() => fn.apply(this, args), delay); };
+}
+
 // ===== 初始化 =====
 // 由 firebase-config.js 的 onAuthStateChanged 觸發
 document.addEventListener('DOMContentLoaded', () => {
@@ -69,33 +74,50 @@ function switchPage(page) {
 
 // ===== 篩選器初始化 =====
 function initFilters() {
-  ['case-search','case-filter-status','case-filter-level','case-filter-doctor','case-filter-category'].forEach(id => {
+  const debouncedCases = debounce(renderCases);
+  const debouncedServices = debounce(renderServices);
+  const debouncedOpinions = debounce(renderOpinions);
+  const debouncedACP = debounce(renderACP);
+  const debouncedMembers = debounce(renderMembers);
+  ['case-search'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('input', renderCases);
+    if (el) el.addEventListener('input', debouncedCases);
+  });
+  ['case-filter-status','case-filter-level','case-filter-doctor','case-filter-category'].forEach(id => {
+    const el = document.getElementById(id);
     if (el) el.addEventListener('change', renderCases);
   });
-  ['service-search','service-filter-type','service-filter-month'].forEach(id => {
+  ['service-search'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('input', renderServices);
+    if (el) el.addEventListener('input', debouncedServices);
+  });
+  ['service-filter-type','service-filter-month'].forEach(id => {
+    const el = document.getElementById(id);
     if (el) el.addEventListener('change', renderServices);
   });
-  ['opinion-search','opinion-filter-status'].forEach(id => {
+  ['opinion-search'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('input', renderOpinions);
+    if (el) el.addEventListener('input', debouncedOpinions);
+  });
+  ['opinion-filter-status'].forEach(id => {
+    const el = document.getElementById(id);
     if (el) el.addEventListener('change', renderOpinions);
   });
   ['billing-month','billing-filter-code','billing-filter-status'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', renderBilling);
   });
-  ['acp-search','acp-filter'].forEach(id => {
+  ['acp-search'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('input', renderACP);
+    if (el) el.addEventListener('input', debouncedACP);
+  });
+  ['acp-filter'].forEach(id => {
+    const el = document.getElementById(id);
     if (el) el.addEventListener('change', renderACP);
   });
   ['member-search'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('input', renderMembers);
+    if (el) el.addEventListener('input', debouncedMembers);
   });
   ['kpi-year','kpi-filter-doctor'].forEach(id => {
     const el = document.getElementById(id);

@@ -59,13 +59,14 @@ async function doLogin() {
     currentUser = data.user;
     sessionStorage.setItem('auth_token', authToken);
     sessionStorage.setItem('auth_token_time', String(Date.now()));
-    onLoginSuccess();
+    onLoginSuccess(data);
   } catch (err) {
     showLoginError(err.message);
   }
 }
 
 function doLogout() {
+  stopIdleDetection();
   apiCall('POST', '/api/logout').catch(() => {});
   authToken = null;
   currentUser = null;
@@ -82,30 +83,110 @@ function showLoginError(msg) {
   el.style.display = 'block';
 }
 
-function onLoginSuccess() {
+// ===== 閒置偵測與 Session 過期警告 =====
+let _idleTimer = null;
+let _idleWarningTimer = null;
+let _sessionMaxAge = 8 * 60 * 60 * 1000;
+let _sessionIdleTimeout = 30 * 60 * 1000;
+
+function resetIdleTimer() {
+  clearTimeout(_idleTimer);
+  clearTimeout(_idleWarningTimer);
+  const warningEl = document.getElementById('session-warning');
+  if (warningEl) warningEl.style.display = 'none';
+  _idleWarningTimer = setTimeout(() => {
+    const w = document.getElementById('session-warning');
+    if (w) w.style.display = 'block';
+  }, _sessionIdleTimeout - 5 * 60 * 1000);
+  _idleTimer = setTimeout(() => {
+    if (authToken) { alert('已閒置超過 30 分鐘，系統將自動登出。'); doLogout(); }
+  }, _sessionIdleTimeout);
+}
+
+function startIdleDetection() {
+  ['click', 'keydown', 'mousemove', 'scroll', 'touchstart'].forEach(evt => {
+    document.addEventListener(evt, resetIdleTimer, { passive: true });
+  });
+  resetIdleTimer();
+}
+
+function stopIdleDetection() {
+  clearTimeout(_idleTimer);
+  clearTimeout(_idleWarningTimer);
+  ['click', 'keydown', 'mousemove', 'scroll', 'touchstart'].forEach(evt => {
+    document.removeEventListener(evt, resetIdleTimer);
+  });
+}
+
+function onLoginSuccess(loginResponse) {
+  if (loginResponse) {
+    if (loginResponse.sessionMaxAge) _sessionMaxAge = loginResponse.sessionMaxAge;
+    if (loginResponse.sessionIdleTimeout) _sessionIdleTimeout = loginResponse.sessionIdleTimeout;
+  }
   document.getElementById('login-page').style.display = 'none';
   document.getElementById('sidebar').style.display = 'flex';
   document.getElementById('main-content').style.display = 'flex';
   document.getElementById('login-error').style.display = 'none';
-
-  // 更新使用者資訊
   const nameEl = document.querySelector('.user-name');
   if (nameEl) nameEl.textContent = currentUser.displayName;
   const roleEl = document.querySelector('.user-role');
   if (roleEl) roleEl.textContent = currentUser.role === 'admin' ? '系統管理員' : '一般使用者';
-
-  // 管理員才顯示「使用者管理」
   const adminNav = document.getElementById('nav-users');
   if (adminNav) adminNav.style.display = currentUser.role === 'admin' ? '' : 'none';
-
-  // 載入資料
+  if (loginResponse && loginResponse.mustChangePassword) {
+    showForceChangePasswordModal();
+    return;
+  }
+  startIdleDetection();
   loadCloudData().then(() => {
-    initNav();
-    initFilters();
-    renderDashboard();
-    updateAlertBadge();
+    initNav(); initFilters(); renderDashboard(); updateAlertBadge();
     document.getElementById('today-date').textContent = formatDateCN(new Date());
   });
+}
+
+// ===== 強制更改密碼 =====
+function showForceChangePasswordModal() {
+  openModal('首次登入 — 請更改預設密碼', `
+    <p style="margin-bottom:1rem;color:var(--danger)">為確保帳號安全，首次登入必須更改密碼。</p>
+    <div class="form-group"><label class="form-label">目前密碼</label><input class="form-input" id="f-force-old-pw" type="password"></div>
+    <div class="form-group"><label class="form-label">新密碼（至少 8 字元，含英文和數字）</label><input class="form-input" id="f-force-new-pw" type="password"></div>
+    <div class="form-group"><label class="form-label">確認新密碼</label><input class="form-input" id="f-force-confirm-pw" type="password"></div>
+  `, `<button class="btn btn-primary" onclick="doForceChangePassword()">更改密碼</button>`);
+}
+
+async function doForceChangePassword() {
+  const oldPw = document.getElementById('f-force-old-pw').value;
+  const newPw = document.getElementById('f-force-new-pw').value;
+  const confirmPw = document.getElementById('f-force-confirm-pw').value;
+  if (!oldPw || !newPw) { alert('請填寫所有欄位'); return; }
+  if (newPw !== confirmPw) { alert('新密碼與確認密碼不一致'); return; }
+  if (newPw.length < 8 || !/[A-Za-z]/.test(newPw) || !/[0-9]/.test(newPw)) { alert('密碼須至少 8 字元且包含英文和數字'); return; }
+  try {
+    await apiCall('PUT', '/api/change-password', { oldPassword: oldPw, newPassword: newPw });
+    closeModal(); showToast('密碼已更改'); startIdleDetection();
+    loadCloudData().then(() => { initNav(); initFilters(); renderDashboard(); updateAlertBadge(); document.getElementById('today-date').textContent = formatDateCN(new Date()); });
+  } catch (err) { alert(err.message); }
+}
+
+// ===== 使用者自行修改密碼 =====
+function showChangePasswordModal() {
+  openModal('修改密碼', `
+    <div class="form-group"><label class="form-label">目前密碼</label><input class="form-input" id="f-chg-old-pw" type="password"></div>
+    <div class="form-group"><label class="form-label">新密碼（至少 8 字元，含英文和數字）</label><input class="form-input" id="f-chg-new-pw" type="password"></div>
+    <div class="form-group"><label class="form-label">確認新密碼</label><input class="form-input" id="f-chg-confirm-pw" type="password"></div>
+  `, `<button class="btn btn-outline" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="doChangeMyPassword()">儲存</button>`);
+}
+
+async function doChangeMyPassword() {
+  const oldPw = document.getElementById('f-chg-old-pw').value;
+  const newPw = document.getElementById('f-chg-new-pw').value;
+  const confirmPw = document.getElementById('f-chg-confirm-pw').value;
+  if (!oldPw || !newPw) { alert('請填寫所有欄位'); return; }
+  if (newPw !== confirmPw) { alert('新密碼與確認密碼不一致'); return; }
+  try {
+    await apiCall('PUT', '/api/change-password', { oldPassword: oldPw, newPassword: newPw });
+    closeModal(); showToast('密碼已更改成功');
+  } catch (err) { alert(err.message); }
 }
 
 // ===== 頁面載入時嘗試自動登入 =====
@@ -126,64 +207,33 @@ const COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
 
 async function loadCloudData() {
   try {
-    const metaDoc = await fsdb.collection('system').doc('meta').get();
-    const cloudVersion = metaDoc.exists ? (metaDoc.data().dataVersion || null) : null;
-    const needsInit = !metaDoc.exists || cloudVersion !== DB_VERSION;
-
-    if (!needsInit) {
-      console.log('從雲端載入資料...');
-      db = { members: [], cases: [], opinions: [], services: [], billings: [], diseases: [] };
-      for (const col of COLLECTIONS) {
-        const snapshot = await fsdb.collection(col).get();
-        db[col] = snapshot.docs.map(doc => ({ ...doc.data(), _docId: doc.id }));
-      }
-      console.log(`雲端資料載入: ${db.cases.length} 個案, ${db.members.length} 成員`);
-
+    const cloudData = await apiCall('GET', '/api/data');
+    const cloudVersion = cloudData.dataVersion || null;
+    const needsInit = !cloudVersion || cloudVersion !== DB_VERSION;
+    if (!needsInit && cloudData.cases && cloudData.cases.length > 0) {
+      db = { members: cloudData.members || [], cases: cloudData.cases || [],
+             opinions: cloudData.opinions || [], services: cloudData.services || [],
+             billings: cloudData.billings || [], diseases: [] };
       if (db.cases.length === 0 && typeof RAW_CASES_DATA !== 'undefined' && RAW_CASES_DATA.length > 0) {
-        console.warn('雲端資料為空，重新從本地清冊初始化...');
         db = generateDemoData();
-        uploadAllData(db).catch(e => console.error('背景上傳失敗:', e));
-        saveDB_local(db);
-        return;
+        syncDataToBackend(db).catch(e => console.error('背景上傳失敗:', e));
+        saveDB_local(db); return;
       }
+    } else {
+      db = generateDemoData(); saveDB_local(db);
+      syncDataToBackend(db).catch(e => console.error('雲端同步失敗:', e));
     }
-
-    if (needsInit) {
-      console.log(`雲端資料版本不符 (${cloudVersion} → ${DB_VERSION})，重新初始化...`);
-      db = generateDemoData();
-      saveDB_local(db);
-      console.log(`本地資料已就緒: ${db.cases.length} 個案, ${db.members.length} 成員`);
-
-      (async () => {
-        try {
-          for (const col of COLLECTIONS) {
-            const snapshot = await fsdb.collection(col).get();
-            const docs = snapshot.docs;
-            for (let i = 0; i < docs.length; i += 400) {
-              const batch = fsdb.batch();
-              docs.slice(i, i + 400).forEach(doc => batch.delete(doc.ref));
-              await batch.commit();
-            }
-          }
-          await uploadAllData(db);
-          await fsdb.collection('system').doc('meta').set({
-            initialized: true,
-            dataVersion: DB_VERSION,
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-          });
-          console.log('雲端資料同步完成');
-        } catch (e) {
-          console.error('雲端同步失敗（本地資料仍可用）:', e);
-        }
-      })();
-    }
-
     saveDB_local(db);
   } catch (err) {
     console.error('雲端載入失敗，使用本地資料:', err);
-    db = generateDemoData();
-    saveDB_local(db);
+    db = generateDemoData(); saveDB_local(db);
   }
+}
+
+async function syncDataToBackend(data) {
+  const payload = { dataVersion: DB_VERSION };
+  COLLECTIONS.forEach(col => { if (data[col]) payload[col] = data[col]; });
+  await apiCall('POST', '/api/data/sync', payload);
 }
 
 function saveDB_local(data) {
@@ -192,99 +242,42 @@ function saveDB_local(data) {
   if (data.members) saveMembers(data.members);
 }
 
-async function uploadAllData(data) {
-  for (const col of COLLECTIONS) {
-    const items = data[col] || [];
-    for (let i = 0; i < items.length; i += 400) {
-      const batch = fsdb.batch();
-      const chunk = items.slice(i, i + 400);
-      chunk.forEach(item => {
-        const docRef = fsdb.collection(col).doc(item.id);
-        batch.set(docRef, item);
-      });
-      await batch.commit();
-    }
-  }
-}
-
-// ===== 覆寫 saveDB =====
+// saveDB - via backend API
+let _saveDebounceTimer = null;
 function saveDB(data) {
   localStorage.setItem(DB_KEY, JSON.stringify(data));
   if (data.members) saveMembers(data.members);
-  COLLECTIONS.forEach(col => {
-    if (data[col]) {
-      data[col].forEach(item => {
-        if (item.id) {
-          fsdb.collection(col).doc(item.id).set(item, { merge: true })
-            .catch(err => console.error(`同步 ${col}/${item.id} 失敗:`, err));
-        }
-      });
-    }
-  });
+  clearTimeout(_saveDebounceTimer);
+  _saveDebounceTimer = setTimeout(() => {
+    COLLECTIONS.forEach(col => {
+      if (data[col]) {
+        data[col].forEach(item => {
+          if (item.id) {
+            apiCall('PUT', `/api/data/${col}/${item.id}`, item)
+              .catch(err => console.error(`同步 ${col}/${item.id} 失敗:`, err));
+          }
+        });
+      }
+    });
+  }, 500);
 }
 
 // ===== 手動同步到雲端 =====
 async function syncToCloud() {
   const btn = document.getElementById('btn-sync-cloud');
   if (!currentUser) { alert('請先登入再同步'); return; }
-
-  btn.disabled = true;
-  btn.textContent = '☁ 同步中...';
-
+  btn.disabled = true; btn.textContent = '☁ 同步中...';
   try {
-    if (!db || !db.cases || db.cases.length === 0) {
-      db = generateDemoData();
-      saveDB_local(db);
-    }
-
-    btn.textContent = '☁ 清除舊資料...';
-    for (const col of COLLECTIONS) {
-      const snapshot = await fsdb.collection(col).get();
-      const docs = snapshot.docs;
-      for (let i = 0; i < docs.length; i += 400) {
-        const batch = fsdb.batch();
-        docs.slice(i, i + 400).forEach(doc => batch.delete(doc.ref));
-        await batch.commit();
-      }
-    }
-
-    let uploaded = 0;
-    const totalItems = COLLECTIONS.reduce((sum, col) => sum + (db[col] || []).length, 0);
-    for (const col of COLLECTIONS) {
-      const items = db[col] || [];
-      for (let i = 0; i < items.length; i += 400) {
-        const batch = fsdb.batch();
-        const chunk = items.slice(i, i + 400);
-        chunk.forEach(item => {
-          const docRef = fsdb.collection(col).doc(item.id);
-          batch.set(docRef, item);
-        });
-        await batch.commit();
-        uploaded += chunk.length;
-        btn.textContent = `☁ 上傳中 ${Math.round(uploaded / totalItems * 100)}%`;
-      }
-    }
-
-    await fsdb.collection('system').doc('meta').set({
-      initialized: true,
-      dataVersion: DB_VERSION,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-
-    btn.textContent = '☁ 同步完成 ✓';
-    btn.style.background = '#2196F3';
+    if (!db || !db.cases || db.cases.length === 0) { db = generateDemoData(); saveDB_local(db); }
+    await syncDataToBackend(db);
+    btn.textContent = '☁ 同步完成 ✓'; btn.style.background = '#2196F3';
     alert(`雲端同步完成！\n${db.cases.length} 個案、${db.members.length} 成員、${db.services.length} 服務紀錄已上傳`);
   } catch (err) {
     console.error('同步失敗:', err);
-    btn.textContent = '☁ 同步失敗 ✗';
-    btn.style.background = '#f44336';
+    btn.textContent = '☁ 同步失敗 ✗'; btn.style.background = '#f44336';
     alert('同步失敗: ' + err.message);
   } finally {
-    setTimeout(() => {
-      btn.disabled = false;
-      btn.textContent = '☁ 同步到雲端';
-      btn.style.background = '#4CAF50';
-    }, 3000);
+    setTimeout(() => { btn.disabled = false; btn.textContent = '☁ 同步到雲端'; btn.style.background = '#4CAF50'; }, 3000);
   }
 }
 

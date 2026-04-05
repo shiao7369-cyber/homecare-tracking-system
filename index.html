@@ -85,9 +85,16 @@
         <div class="user-role">系統管理員</div>
       </div>
     </div>
+    <button class="btn btn-sm btn-outline" onclick="showChangePasswordModal()" style="width:100%;margin-bottom:.5rem">🔑 修改密碼</button>
     <button class="logout-btn" onclick="doLogout()">登出系統</button>
   </div>
 </aside>
+
+<!-- ===== Session 閒置警告 ===== -->
+<div id="session-warning" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#FF9800;color:#fff;text-align:center;padding:.75rem;font-weight:600;">
+  ⚠ 您已閒置超過 25 分鐘，5 分鐘後將自動登出。
+  <button onclick="resetIdleTimer()" style="margin-left:1rem;padding:.25rem .75rem;border:1px solid #fff;background:transparent;color:#fff;border-radius:4px;cursor:pointer;font-weight:600;">延長登入</button>
+</div>
 
 <!-- ===== 主內容區 ===== -->
 <main id="main-content">

@@ -318,7 +318,10 @@ app.post('/api/login', loginLimiter, async (req, res) => {
   await auditLog('LOGIN_SUCCESS', user.id, { ip: req.ip, msg: user.username });
   res.json({
     token,
-    user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role }
+    user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role },
+    mustChangePassword: !!user.mustChangePassword,
+    sessionMaxAge: SESSION_MAX_AGE,
+    sessionIdleTimeout: SESSION_IDLE_TIMEOUT
   });
 });
 
@@ -422,9 +425,85 @@ app.put('/api/change-password', requireAuth, async (req, res) => {
   }
 
   user.password = bcrypt.hashSync(newPassword, BCRYPT_ROUNDS);
+  user.mustChangePassword = false;
   await saveUsers(users);
   await auditLog('PASSWORD_CHANGED', req.session.userId, { ip: req.ip });
   res.json({ ok: true });
+});
+
+// ===== 資料同步 API（取代前端直接寫 Firestore）=====
+const DATA_COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
+
+// 讀取所有資料
+app.get('/api/data', requireAuth, async (req, res) => {
+  try {
+    if (!firestoreDb) return res.status(503).json({ error: '資料庫未就緒' });
+    const result = {};
+    for (const col of DATA_COLLECTIONS) {
+      const snapshot = await firestoreDb.collection(col).get();
+      result[col] = snapshot.docs.map(doc => doc.data());
+    }
+    const metaDoc = await firestoreDb.collection('system').doc('meta').get();
+    result.dataVersion = metaDoc.exists ? (metaDoc.data().dataVersion || null) : null;
+    await auditLog('DATA_READ', req.session.userId, { ip: req.ip, msg: `讀取資料: ${result.cases?.length || 0} 個案` });
+    res.json(result);
+  } catch (err) {
+    console.error('讀取資料失敗:', err);
+    res.status(500).json({ error: '讀取資料失敗' });
+  }
+});
+
+// 儲存單一集合的項目
+app.put('/api/data/:collection/:id', requireAuth, async (req, res) => {
+  const { collection, id } = req.params;
+  if (!DATA_COLLECTIONS.includes(collection)) return res.status(400).json({ error: '無效的集合' });
+  if (!id) return res.status(400).json({ error: '缺少 ID' });
+  try {
+    if (!firestoreDb) return res.status(503).json({ error: '資料庫未就緒' });
+    await firestoreDb.collection(collection).doc(id).set(req.body, { merge: true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: '儲存失敗' });
+  }
+});
+
+// 批次上傳所有資料
+app.post('/api/data/sync', requireAuth, async (req, res) => {
+  try {
+    if (!firestoreDb) return res.status(503).json({ error: '資料庫未就緒' });
+    const data = req.body;
+    let totalItems = 0;
+    for (const col of DATA_COLLECTIONS) {
+      const items = data[col];
+      if (!items || !Array.isArray(items)) continue;
+      const snapshot = await firestoreDb.collection(col).get();
+      for (let i = 0; i < snapshot.docs.length; i += 400) {
+        const batch = firestoreDb.batch();
+        snapshot.docs.slice(i, i + 400).forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+      }
+      for (let i = 0; i < items.length; i += 400) {
+        const batch = firestoreDb.batch();
+        items.slice(i, i + 400).forEach(item => {
+          if (item.id) batch.set(firestoreDb.collection(col).doc(item.id), item);
+        });
+        await batch.commit();
+      }
+      totalItems += items.length;
+    }
+    if (data.dataVersion) {
+      await firestoreDb.collection('system').doc('meta').set({
+        initialized: true,
+        dataVersion: data.dataVersion,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+    await auditLog('DATA_SYNC', req.session.userId, { ip: req.ip, msg: `同步 ${totalItems} 筆資料` });
+    res.json({ ok: true, totalItems });
+  } catch (err) {
+    console.error('資料同步失敗:', err);
+    res.status(500).json({ error: '資料同步失敗' });
+  }
 });
 
 // ===== LCMS 同步 API =====
