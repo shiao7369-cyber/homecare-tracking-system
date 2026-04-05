@@ -98,45 +98,74 @@ async function loadCloudData() {
   try {
     const metaDoc = await fsdb.collection('system').doc('meta').get();
     const cloudVersion = metaDoc.exists ? (metaDoc.data().dataVersion || null) : null;
+    const needsInit = !metaDoc.exists || cloudVersion !== DB_VERSION;
 
-    if (!metaDoc.exists || cloudVersion !== DB_VERSION) {
-      // 版本不符或首次使用：清除舊雲端資料，重新上傳真實資料
-      console.log(`雲端資料版本不符 (${cloudVersion} → ${DB_VERSION})，重新初始化...`);
-
-      // 分批刪除舊的雲端資料 (Firestore batch limit = 500)
-      for (const col of COLLECTIONS) {
-        const snapshot = await fsdb.collection(col).get();
-        const docs = snapshot.docs;
-        for (let i = 0; i < docs.length; i += 400) {
-          const batch = fsdb.batch();
-          docs.slice(i, i + 400).forEach(doc => batch.delete(doc.ref));
-          await batch.commit();
-        }
-      }
-
-      db = generateDemoData();
-      await uploadAllData(db);
-      await fsdb.collection('system').doc('meta').set({
-        initialized: true,
-        dataVersion: DB_VERSION,
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
-      console.log(`雲端資料初始化完成: ${db.cases.length} 個案, ${db.members.length} 成員`);
-    } else {
-      // 版本一致，從雲端載入資料
+    if (!needsInit) {
+      // 版本一致，嘗試從雲端載入
       console.log('從雲端載入資料...');
       db = { members: [], cases: [], opinions: [], services: [], billings: [], diseases: [] };
-
       for (const col of COLLECTIONS) {
         const snapshot = await fsdb.collection(col).get();
         db[col] = snapshot.docs.map(doc => ({ ...doc.data(), _docId: doc.id }));
       }
-      console.log(`雲端資料載入完成: ${db.cases.length} 個案, ${db.members.length} 成員`);
+      console.log(`雲端資料載入: ${db.cases.length} 個案, ${db.members.length} 成員`);
+
+      // 安全檢查：雲端資料為空但本地有真實資料 → 重新初始化
+      if (db.cases.length === 0 && typeof RAW_CASES_DATA !== 'undefined' && RAW_CASES_DATA.length > 0) {
+        console.warn('雲端資料為空，重新從本地清冊初始化...');
+        db = generateDemoData();
+        uploadAllData(db).catch(e => console.error('背景上傳失敗:', e));
+        saveDB_local(db);
+        return;
+      }
     }
+
+    if (needsInit) {
+      // 版本不符或首次使用：用本地真實資料初始化
+      console.log(`雲端資料版本不符 (${cloudVersion} → ${DB_VERSION})，重新初始化...`);
+      db = generateDemoData();
+      saveDB_local(db);
+      console.log(`本地資料已就緒: ${db.cases.length} 個案, ${db.members.length} 成員`);
+
+      // 背景上傳到雲端（不阻塞頁面載入）
+      (async () => {
+        try {
+          // 分批刪除舊資料
+          for (const col of COLLECTIONS) {
+            const snapshot = await fsdb.collection(col).get();
+            const docs = snapshot.docs;
+            for (let i = 0; i < docs.length; i += 400) {
+              const batch = fsdb.batch();
+              docs.slice(i, i + 400).forEach(doc => batch.delete(doc.ref));
+              await batch.commit();
+            }
+          }
+          await uploadAllData(db);
+          await fsdb.collection('system').doc('meta').set({
+            initialized: true,
+            dataVersion: DB_VERSION,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          console.log('雲端資料同步完成');
+        } catch (e) {
+          console.error('雲端同步失敗（本地資料仍可用）:', e);
+        }
+      })();
+    }
+
+    // 同步到 localStorage
+    saveDB_local(db);
   } catch (err) {
     console.error('雲端載入失敗，使用本地資料:', err);
-    db = loadDB();
+    db = generateDemoData();
+    saveDB_local(db);
   }
+}
+
+// 只存 localStorage，不觸發雲端同步
+function saveDB_local(data) {
+  localStorage.setItem(DB_KEY, JSON.stringify(data));
+  localStorage.setItem(DB_VERSION_KEY, DB_VERSION);
 }
 
 async function uploadAllData(data) {
