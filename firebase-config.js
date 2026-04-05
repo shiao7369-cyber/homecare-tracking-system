@@ -171,6 +171,7 @@ async function loadCloudData() {
 function saveDB_local(data) {
   localStorage.setItem(DB_KEY, JSON.stringify(data));
   localStorage.setItem(DB_VERSION_KEY, DB_VERSION);
+  if (data.members) saveMembers(data.members);
 }
 
 async function uploadAllData(data) {
@@ -191,6 +192,7 @@ async function uploadAllData(data) {
 // ===== 覆寫 saveDB =====
 function saveDB(data) {
   localStorage.setItem(DB_KEY, JSON.stringify(data));
+  if (data.members) saveMembers(data.members);
   COLLECTIONS.forEach(col => {
     if (data[col]) {
       data[col].forEach(item => {

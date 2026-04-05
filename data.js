@@ -298,36 +298,49 @@ function generateBillingRecords(cases, opinions, services) {
   return billings;
 }
 
-// ===== 產生完整資料庫 =====
-function generateDemoData() {
-  const rawCases = loadRawCases();
-  const doctors = getRealDoctors();
-  const nurses = getRealNurses();
-  let members = [...doctors, ...nurses];
-  const diseases = getDiseases();
+// ===== 成員資料獨立儲存 =====
+const MEMBERS_KEY = 'homecare_members';
 
-  // 保留使用者已修改過的成員資料（如科別變更）
+function loadMembers() {
+  // 優先讀取獨立儲存的成員資料（使用者修改過的）
+  try {
+    const saved = localStorage.getItem(MEMBERS_KEY);
+    if (saved) {
+      const members = JSON.parse(saved);
+      if (members.length > 0) return members;
+    }
+  } catch (e) { }
+
+  // 舊版 DB 中可能有成員資料
   try {
     const saved = localStorage.getItem(DB_KEY);
     if (saved) {
       const oldDb = JSON.parse(saved);
-      if (oldDb.members && oldDb.members.length > 0) {
-        members = members.map(m => {
-          const existing = oldDb.members.find(om => om.id === m.id);
-          return existing ? { ...m, ...existing } : m;
-        });
-        // 加入使用者自行新增的成員
-        oldDb.members.forEach(om => {
-          if (!members.find(m => m.id === om.id)) members.push(om);
-        });
-      }
+      if (oldDb.members && oldDb.members.length > 0) return oldDb.members;
     }
   } catch (e) { }
+
+  // 都沒有，用預設值
+  return [...getRealDoctors(), ...getRealNurses()];
+}
+
+function saveMembers(members) {
+  localStorage.setItem(MEMBERS_KEY, JSON.stringify(members));
+}
+
+// ===== 產生完整資料庫 =====
+function generateDemoData() {
+  const rawCases = loadRawCases();
+  const members = loadMembers();
+  const diseases = getDiseases();
 
   const cases = convertRawCases(rawCases);
   const opinions = generateOpinionsFromCases(cases.filter(c => c.status === 'active'));
   const services = generateServicesFromTracking(cases);
   const billings = generateBillingRecords(cases, opinions, services);
+
+  // 同時備份成員資料到獨立 key
+  saveMembers(members);
 
   return { members, cases, opinions, services, billings, diseases };
 }
