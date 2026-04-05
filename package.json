@@ -1,0 +1,11 @@
+{
+  "name": "homecare-tracking-system",
+  "version": "1.0.0",
+  "description": "居家失能個案家庭醫師照護方案 — 個案追蹤管理系統",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
