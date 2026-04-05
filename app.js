@@ -83,7 +83,7 @@ function initFilters() {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', debouncedCases);
   });
-  ['case-filter-status','case-filter-level','case-filter-doctor','case-filter-category'].forEach(id => {
+  ['case-filter-status','case-filter-level','case-filter-doctor','case-filter-category','case-filter-nurse'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', renderCases);
   });
@@ -209,13 +209,18 @@ function renderDashboard() {
   document.getElementById('stat-total-doctors').textContent = docs.length;
   document.getElementById('trend-doctors').textContent = `平均 ${docs.length ? Math.round(active.length/docs.length) : 0} 案/醫師`;
 
-  // 意見書待更新
-  let opDue = 0;
+  // 意見書待更新（細分）
+  let opExpired = 0, opExpiring = 0, opNone = 0;
   active.forEach(c => {
     const op = getLatestOpinion(db, c.id);
-    if (!op || op.status === 'expired' || op.status === 'expiring') opDue++;
+    if (!op) opNone++;
+    else if (op.status === 'expired') opExpired++;
+    else if (op.status === 'expiring') opExpiring++;
   });
+  const opDue = opExpired + opExpiring + opNone;
   document.getElementById('stat-opinion-due').textContent = opDue;
+  const opDetailEl = document.getElementById('trend-opinion');
+  if (opDetailEl) opDetailEl.innerHTML = opExpired ? `<span style="color:var(--danger)">${opExpired}過期</span> ${opExpiring}即期 ${opNone}未開` : `${opExpiring}即期 ${opNone}未開`;
 
   // 警示
   const alerts = generateAlerts();
@@ -295,6 +300,12 @@ function populateDoctorSelects() {
     const firstOpt = el.options[0].outerHTML;
     el.innerHTML = firstOpt + docs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
   });
+  const nurses = getNurses(db).filter(n => n.status === 'active');
+  const nurseEl = document.getElementById('case-filter-nurse');
+  if (nurseEl) {
+    const firstOpt = nurseEl.options[0].outerHTML;
+    nurseEl.innerHTML = firstOpt + nurses.map(n => `<option value="${n.id}">${esc(n.name)}</option>`).join('');
+  }
 }
 
 // ==========================================
@@ -306,6 +317,7 @@ function renderCases() {
   const level = document.getElementById('case-filter-level')?.value || '';
   const doctor = document.getElementById('case-filter-doctor')?.value || '';
   const category = document.getElementById('case-filter-category')?.value || '';
+  const nurseFilter = document.getElementById('case-filter-nurse')?.value || '';
 
   let filtered = db.cases.filter(c => {
     if (search && !c.name.toLowerCase().includes(search) && !c.idNumber.toLowerCase().includes(search) && !(c.id && c.id.toLowerCase().includes(search)) && !(c.district && c.district.includes(search)) && !(c.contactPerson && c.contactPerson.includes(search))) return false;
@@ -313,6 +325,7 @@ function renderCases() {
     if (level && c.cmsLevel !== parseInt(level)) return false;
     if (doctor && c.doctorId !== doctor) return false;
     if (category && c.category !== category) return false;
+    if (nurseFilter && c.nurseId !== nurseFilter) return false;
     return true;
   });
 
@@ -337,6 +350,24 @@ function renderCases() {
       ? `<span class="badge badge-success" title="${esc(trackingText)}">${esc(trackingText)}</span>`
       : (c.status === 'active' ? '<span class="badge badge-danger">未追蹤</span>' : '-');
 
+    // 本月電訪狀態
+    const phoneThisMonth = getPhoneVisitsThisMonth(db, c.id);
+    const phoneBadge = phoneThisMonth.length > 0
+      ? `<span class="badge badge-success">電${phoneThisMonth.length}</span>`
+      : (c.status === 'active' ? '<span class="badge badge-warning">未電訪</span>' : '-');
+
+    // 上次家訪狀態
+    const lastHomeVisit = db.services.filter(s => s.caseId === c.id && s.type === 'home')
+      .sort((a,b) => b.date.localeCompare(a.date))[0];
+    let homeBadge = '-';
+    if (lastHomeVisit) {
+      const homeAge = daysBetween(lastHomeVisit.date, fmt(new Date()));
+      const homeColor = homeAge > 120 ? 'danger' : homeAge > 90 ? 'warning' : 'success';
+      homeBadge = `<span class="badge badge-${homeColor}" title="${homeAge}天前">${lastHomeVisit.date.substring(5)}</span>`;
+    } else if (c.status === 'active') {
+      homeBadge = '<span class="badge badge-danger">未家訪</span>';
+    }
+
     return `<tr class="${c.status === 'active' && !trackingText ? 'row-warning' : ''}">
       <td><small>${c.id}</small></td>
       <td><strong>${esc(c.name)}</strong></td>
@@ -345,6 +376,8 @@ function renderCases() {
       <td><small>${esc(c.district || '-')}</small></td>
       <td>${doc ? esc(doc.name) : esc(c.doctorName || '-')}</td>
       <td>${opBadge}</td>
+      <td>${phoneBadge}</td>
+      <td>${homeBadge}</td>
       <td>${trackBadge}</td>
       <td>${statusBadge}</td>
       <td>
@@ -562,6 +595,42 @@ function viewCase(caseId) {
           ${c.status === 'closed' ? `<tr><td style="padding:2px 8px;color:var(--gray-500)">結案資訊</td><td style="color:#dc2626">${esc(c.closeInfo || c.closeReason || '-')}</td></tr>` : ''}
         </table>
       </div>
+    </div>
+    <h4 style="margin:1rem 0 .5rem;color:var(--gray-600)">追蹤狀態摘要</h4>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;margin-bottom:1rem">
+      ${(() => {
+        const yy = String(new Date().getFullYear());
+        const phoneAll = svcs.filter(s => s.type === 'phone' && s.date.startsWith(yy));
+        const homeAll = svcs.filter(s => s.type === 'home' && s.date.startsWith(yy));
+        const lastPhone = svcs.find(s => s.type === 'phone');
+        const lastHomeV = svcs.find(s => s.type === 'home');
+        const opInfo = getOpinionExpiryInfo(db, c.id);
+        const opText = opInfo.opinion
+          ? (opInfo.daysLeft > 30 ? `有效 (剩${opInfo.daysLeft}天)` : opInfo.daysLeft > 0 ? `即將到期 (剩${opInfo.daysLeft}天)` : '已過期')
+          : '未開立';
+        const opColor = opInfo.opinion ? (opInfo.daysLeft > 30 ? '#16a34a' : opInfo.daysLeft > 0 ? '#d97706' : '#dc2626') : '#dc2626';
+        return `
+          <div style="background:#f0f9ff;border-radius:8px;padding:.5rem;text-align:center">
+            <div style="font-size:1.2rem;font-weight:700;color:#2563eb">${phoneAll.length}</div>
+            <div style="font-size:.75rem;color:var(--gray-500)">本年電訪</div>
+            <div style="font-size:.7rem;color:var(--gray-400)">${lastPhone ? '上次: ' + lastPhone.date : '無紀錄'}</div>
+          </div>
+          <div style="background:#f0fdf4;border-radius:8px;padding:.5rem;text-align:center">
+            <div style="font-size:1.2rem;font-weight:700;color:#16a34a">${homeAll.length}</div>
+            <div style="font-size:.75rem;color:var(--gray-500)">本年家訪</div>
+            <div style="font-size:.7rem;color:var(--gray-400)">${lastHomeV ? '上次: ' + lastHomeV.date : '無紀錄'}</div>
+          </div>
+          <div style="background:#fffbeb;border-radius:8px;padding:.5rem;text-align:center">
+            <div style="font-size:1.2rem;font-weight:700;color:${opColor}">${esc(opText)}</div>
+            <div style="font-size:.75rem;color:var(--gray-500)">意見書</div>
+            <div style="font-size:.7rem;color:var(--gray-400)">${opInfo.opinion ? '到期: ' + opInfo.opinion.expiryDate : '-'}</div>
+          </div>
+          <div style="background:#fdf2f8;border-radius:8px;padding:.5rem;text-align:center">
+            <div style="font-size:1.2rem;font-weight:700;color:#7c3aed">${svcThisMonth.length}</div>
+            <div style="font-size:.75rem;color:var(--gray-500)">本月服務</div>
+            <div style="font-size:.7rem;color:var(--gray-400)">電${getPhoneVisitsThisMonth(db, c.id).length} 家${svcThisMonth.filter(s=>s.type==='home').length}</div>
+          </div>`;
+      })()}
     </div>
     <h4 style="margin:1rem 0 .5rem;color:var(--gray-600)">115年度月追蹤紀錄 <small style="color:var(--gray-400)">(家=家訪 電=電訪 視=視訊 結=結案)</small></h4>
     <table class="data-table" style="font-size:.82rem">
@@ -1469,15 +1538,17 @@ function generateAlerts() {
         });
       }
     } else if (op.status === 'expired') {
+      const nurseName2 = c.nurseId ? (findMember(db, c.nurseId)?.name || '') : '';
       alerts.push({
         level: 'danger', title: `${esc(c.name)} 意見書已過期`,
-        desc: `到期日 ${op.expiryDate}，請盡速更新`,
+        desc: `到期日 ${op.expiryDate}${nurseName2 ? '，個管師: ' + esc(nurseName2) + '，請安排醫師家訪更新' : '，請盡速更新'}`,
         page: 'opinion', caseId: c.id,
       });
     } else if (op.status === 'expiring') {
+      const nurseName3 = c.nurseId ? (findMember(db, c.nurseId)?.name || '') : '';
       alerts.push({
         level: 'warning', title: `${esc(c.name)} 意見書即將到期`,
-        desc: `到期日 ${op.expiryDate}`,
+        desc: `到期日 ${op.expiryDate}${nurseName3 ? '，個管師: ' + esc(nurseName3) + '，請安排醫師家訪更新' : ''}`,
         page: 'opinion', caseId: c.id,
       });
     }
@@ -1494,6 +1565,33 @@ function generateAlerts() {
           page: 'services', caseId: c.id,
         });
       }
+    }
+
+    // 本月未電訪
+    const enrollDaysTotal = daysBetween(c.enrollDate, fmt(now));
+    if (enrollDaysTotal > 30) {
+      const phoneThisMonth = getPhoneVisitsThisMonth(db, c.id);
+      if (phoneThisMonth.length === 0) {
+        const lastPhone = db.services.filter(s => s.caseId === c.id && s.type === 'phone')
+          .sort((a,b) => b.date.localeCompare(a.date))[0];
+        alerts.push({
+          level: 'warning', title: `${esc(c.name)} 本月尚未電訪`,
+          desc: `上次電訪: ${lastPhone ? lastPhone.date : '無紀錄'}`,
+          page: 'services', caseId: c.id,
+        });
+      }
+    }
+
+    // 個管師家訪逾期 (>90天)
+    const lastNurseHome = getLastNurseHomeVisit(db, c.id);
+    const nurseHomeDays = lastNurseHome ? daysBetween(lastNurseHome.date, fmt(now)) : (enrollDaysTotal > 90 ? 999 : 0);
+    if (nurseHomeDays > 90) {
+      const nurseName = c.nurseId ? (findMember(db, c.nurseId)?.name || '') : '';
+      alerts.push({
+        level: 'warning', title: `${esc(c.name)} 個管師超過3個月未家訪`,
+        desc: `${nurseName ? '個管師: ' + esc(nurseName) + '，' : ''}上次家訪: ${lastNurseHome ? lastNurseHome.date : '無紀錄'}`,
+        page: 'services', caseId: c.id,
+      });
     }
 
     // ACP 收案滿6月未說明
@@ -1618,17 +1716,25 @@ function generateReport(type) {
       csv += `電訪次數,${svcMonth.filter(s=>s.type==='phone').length}\n`;
       csv += `視訊次數,${svcMonth.filter(s=>s.type==='video').length}\n`;
       csv += `本月申報總額,$${billingMonth.reduce((s,b)=>s+b.amount,0).toLocaleString()}\n`;
+      const phoneDoneCount = active.filter(c => getPhoneVisitsThisMonth(db, c.id).length > 0).length;
+      csv += `個管師電訪完成案數,${phoneDoneCount}/${active.length}\n`;
+      const homeDoneCount = active.filter(c => { const lh = getLastNurseHomeVisit(db, c.id); return lh && daysBetween(lh.date, fmt(now)) <= 90; }).length;
+      csv += `個管師家訪3月內完成案數,${homeDoneCount}/${active.length}\n`;
       const kpi = computeKPI();
       kpi.forEach(k => csv += `${k.label},${k.value.toFixed(1)}%\n`);
       break;
     }
     case 'case_list': {
       filename = `個案清冊_${ym}.csv`;
-      csv += '個案編號,姓名,性別,年齡,CMS等級,負責醫師,個管師,收案日期,狀態,疾病診斷,ACP狀態\n';
+      csv += '個案編號,姓名,性別,年齡,CMS等級,負責醫師,個管師,收案日期,狀態,本月電訪次數,上次家訪日,意見書狀態,意見書到期日,疾病診斷,ACP狀態\n';
       db.cases.forEach(c => {
         const d = findMember(db, c.doctorId);
         const n = findMember(db, c.nurseId);
-        csv += `${escCSV(c.id)},${escCSV(c.name)},${c.gender==='M'?'男':'女'},${c.age},${c.cmsLevel},${d?escCSV(d.name):''},${n?escCSV(n.name):''},${escCSV(c.enrollDate)},${c.status==='active'?'收案中':'已結案'},${escCSV(c.diagnoses.map(d=>d.name).join(';'))},${c.acpExplained?'已說明':'未說明'}\n`;
+        const phoneCount = getPhoneVisitsThisMonth(db, c.id).length;
+        const lastH = db.services.filter(s => s.caseId === c.id && s.type === 'home').sort((a,b) => b.date.localeCompare(a.date))[0];
+        const opInfo = getOpinionExpiryInfo(db, c.id);
+        const opStatus = opInfo.opinion ? (opInfo.opinion.status === 'valid' ? '有效' : opInfo.opinion.status === 'expiring' ? '即將到期' : '已過期') : '未開立';
+        csv += `${escCSV(c.id)},${escCSV(c.name)},${c.gender==='M'?'男':'女'},${c.age},${c.cmsLevel},${d?escCSV(d.name):''},${n?escCSV(n.name):''},${escCSV(c.enrollDate)},${c.status==='active'?'收案中':'已結案'},${phoneCount},${lastH?lastH.date:''},${opStatus},${opInfo.opinion?opInfo.opinion.expiryDate:''},${escCSV(c.diagnoses.map(d=>d.name).join(';'))},${c.acpExplained?'已說明':'未說明'}\n`;
       });
       break;
     }

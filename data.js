@@ -421,3 +421,22 @@ function getHomeVisitsThisYear(db, caseId) {
   const yy = String(new Date().getFullYear());
   return db.services.filter(s => s.caseId === caseId && s.type === 'home' && s.date.startsWith(yy));
 }
+
+function getPhoneVisitsThisMonth(db, caseId) {
+  const ym = fmt(new Date()).substring(0, 7);
+  return db.services.filter(s => s.caseId === caseId && s.type === 'phone' && s.date.startsWith(ym));
+}
+
+function getLastNurseHomeVisit(db, caseId) {
+  return db.services
+    .filter(s => s.caseId === caseId && s.type === 'home' && s.nurseId)
+    .sort((a, b) => b.date.localeCompare(a.date))[0] || null;
+}
+
+function getOpinionExpiryInfo(db, caseId) {
+  const op = getLatestOpinion(db, caseId);
+  if (!op) return { opinion: null, daysLeft: -1, needsRenewal: true };
+  const expiry = new Date(op.expiryDate);
+  const daysLeft = Math.ceil((expiry - new Date()) / (1000 * 60 * 60 * 24));
+  return { opinion: op, daysLeft, needsRenewal: daysLeft <= 30 || op.status === 'expired' };
+}

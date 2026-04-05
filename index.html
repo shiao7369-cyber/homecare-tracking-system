@@ -135,7 +135,7 @@
           <div class="stat-value" id="stat-opinion-due">0</div>
           <div class="stat-label">意見書待更新</div>
         </div>
-        <div class="stat-trend warn">30天內到期</div>
+        <div class="stat-trend warn" id="trend-opinion">30天內到期</div>
       </div>
       <div class="stat-card stat-danger">
         <div class="stat-icon">⚠️</div>
@@ -214,6 +214,9 @@
           <option value="第三類">第三類</option>
           <option value="一般戶">一般戶</option>
         </select>
+        <select class="form-select" id="case-filter-nurse">
+          <option value="">全部個管師</option>
+        </select>
       </div>
       <div class="toolbar-right">
         <button class="btn btn-primary" onclick="openCaseModal()">＋ 新增個案</button>
@@ -225,7 +228,7 @@
           <tr>
             <th>照管案號</th><th>姓名</th><th>身分別</th><th>CMS</th>
             <th>里別</th><th>負責醫師</th><th>意見書</th>
-            <th>本月追蹤</th><th>狀態</th><th>操作</th>
+            <th>本月電訪</th><th>上次家訪</th><th>本月追蹤</th><th>狀態</th><th>操作</th>
           </tr>
         </thead>
         <tbody id="cases-tbody"></tbody>
