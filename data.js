@@ -5,7 +5,7 @@
 
 const DB_KEY = 'homecare_db';
 const DB_VERSION_KEY = 'homecare_db_version';
-const DB_VERSION = '2.0_real_data';
+const DB_VERSION = '2.1_doctor_update';
 
 // ===== 真實個案資料（由個案清冊匯入） =====
 // 此處為外部載入的 JSON，初次載入時由 loadRawCases() 提供
@@ -20,7 +20,7 @@ function loadRawCases() {
 // ===== 真實醫師資料 =====
 function getRealDoctors() {
   return [
-    { id:'D001', name:'李致有', role:'doctor', specialty:'家醫科', phone:'',
+    { id:'D001', name:'李致有', role:'doctor', specialty:'小兒科', phone:'',
       acpTrained: true, acpTrainedDate:'2023-08-15', opinionTrained: true, opinionTrainedDate:'2023-07-20',
       joinDate:'2020-08-01', status:'active' },
     { id:'D002', name:'徐子茜', role:'doctor', specialty:'家醫科', phone:'',
