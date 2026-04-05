@@ -188,13 +188,20 @@
         </select>
         <select class="form-select" id="case-filter-level">
           <option value="">全部等級</option>
-          <option value="2">第2級</option><option value="3">第3級</option>
-          <option value="4">第4級</option><option value="5">第5級</option>
-          <option value="6">第6級</option><option value="7">第7級</option>
-          <option value="8">第8級</option>
+          <option value="2">CMS 2</option><option value="3">CMS 3</option>
+          <option value="4">CMS 4</option><option value="5">CMS 5</option>
+          <option value="6">CMS 6</option><option value="7">CMS 7</option>
+          <option value="8">CMS 8</option>
         </select>
         <select class="form-select" id="case-filter-doctor">
           <option value="">全部醫師</option>
+        </select>
+        <select class="form-select" id="case-filter-category">
+          <option value="">全部身分別</option>
+          <option value="第一類">第一類</option>
+          <option value="第二類">第二類</option>
+          <option value="第三類">第三類</option>
+          <option value="一般戶">一般戶</option>
         </select>
       </div>
       <div class="toolbar-right">
@@ -205,9 +212,9 @@
       <table class="data-table" id="cases-table">
         <thead>
           <tr>
-            <th>個案編號</th><th>姓名</th><th>年齡</th><th>CMS等級</th>
-            <th>負責醫師</th><th>個管師</th><th>意見書狀態</th>
-            <th>本月服務</th><th>狀態</th><th>操作</th>
+            <th>照管案號</th><th>姓名</th><th>身分別</th><th>CMS</th>
+            <th>里別</th><th>負責醫師</th><th>意見書</th>
+            <th>本月追蹤</th><th>狀態</th><th>操作</th>
           </tr>
         </thead>
         <tbody id="cases-tbody"></tbody>
@@ -466,6 +473,7 @@
 <input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImport(event)">
 
 <script src="firebase-config.js"></script>
+<script src="cases-data.js"></script>
 <script src="data.js"></script>
 <script src="app.js"></script>
 </body>

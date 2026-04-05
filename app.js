@@ -50,7 +50,7 @@ function switchPage(page) {
 
 // ===== 篩選器初始化 =====
 function initFilters() {
-  ['case-search','case-filter-status','case-filter-level','case-filter-doctor'].forEach(id => {
+  ['case-search','case-filter-status','case-filter-level','case-filter-doctor','case-filter-category'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', renderCases);
     if (el) el.addEventListener('change', renderCases);
@@ -264,12 +264,14 @@ function renderCases() {
   const status = document.getElementById('case-filter-status')?.value || '';
   const level = document.getElementById('case-filter-level')?.value || '';
   const doctor = document.getElementById('case-filter-doctor')?.value || '';
+  const category = document.getElementById('case-filter-category')?.value || '';
 
   let filtered = db.cases.filter(c => {
-    if (search && !c.name.toLowerCase().includes(search) && !c.idNumber.toLowerCase().includes(search)) return false;
+    if (search && !c.name.toLowerCase().includes(search) && !c.idNumber.toLowerCase().includes(search) && !(c.id && c.id.toLowerCase().includes(search)) && !(c.district && c.district.includes(search)) && !(c.contactPerson && c.contactPerson.includes(search))) return false;
     if (status && c.status !== status) return false;
     if (level && c.cmsLevel !== parseInt(level)) return false;
     if (doctor && c.doctorId !== doctor) return false;
+    if (category && c.category !== category) return false;
     return true;
   });
 
@@ -287,15 +289,22 @@ function renderCases() {
       ? `<span class="badge badge-success">${svcThisMonth.length}次</span>`
       : '<span class="badge badge-danger">未服務</span>';
 
-    return `<tr class="${c.status === 'active' && svcThisMonth.length === 0 ? 'row-warning' : ''}">
-      <td>${c.id}</td>
+    // 本月追蹤狀態：從 monthlyTracking 取當月資料
+    const curMonth = String(new Date().getMonth() + 1);
+    const trackingText = c.monthlyTracking ? c.monthlyTracking[curMonth] || '' : '';
+    const trackBadge = trackingText
+      ? `<span class="badge badge-success" title="${trackingText}">${trackingText}</span>`
+      : (c.status === 'active' ? '<span class="badge badge-danger">未追蹤</span>' : '-');
+
+    return `<tr class="${c.status === 'active' && !trackingText ? 'row-warning' : ''}">
+      <td><small>${c.id}</small></td>
       <td><strong>${c.name}</strong></td>
-      <td>${c.age}</td>
-      <td><span class="badge badge-primary">第${c.cmsLevel}級</span></td>
-      <td>${doc ? doc.name : '-'}</td>
-      <td>${nurse ? nurse.name : '-'}</td>
+      <td><small>${c.category || '-'}</small></td>
+      <td><span class="badge badge-primary">${c.cmsLevel || '-'}</span></td>
+      <td><small>${c.district || '-'}</small></td>
+      <td>${doc ? doc.name : (c.doctorName || '-')}</td>
       <td>${opBadge}</td>
-      <td>${c.status === 'active' ? svcBadge : '-'}</td>
+      <td>${trackBadge}</td>
       <td>${statusBadge}</td>
       <td>
         <button class="btn btn-xs btn-outline" onclick="viewCase('${c.id}')">檢視</button>
@@ -313,6 +322,10 @@ function openCaseModal(caseId) {
   const body = `
     <div class="form-row">
       <div class="form-group">
+        <label class="form-label">照管案號 *</label>
+        <input class="form-input" id="f-case-no" value="${c ? c.id : ''}" style="width:100%" ${c ? 'readonly' : ''}>
+      </div>
+      <div class="form-group">
         <label class="form-label">姓名 *</label>
         <input class="form-input" id="f-case-name" value="${c ? c.name : ''}" style="width:100%">
       </div>
@@ -321,7 +334,7 @@ function openCaseModal(caseId) {
         <input class="form-input" id="f-case-id-number" value="${c ? c.idNumber : ''}" style="width:100%">
       </div>
     </div>
-    <div class="form-row-3">
+    <div class="form-row">
       <div class="form-group">
         <label class="form-label">性別</label>
         <select class="form-select" id="f-case-gender" style="width:100%">
@@ -330,8 +343,13 @@ function openCaseModal(caseId) {
         </select>
       </div>
       <div class="form-group">
-        <label class="form-label">年齡</label>
-        <input type="number" class="form-input" id="f-case-age" value="${c ? c.age : ''}" style="width:100%">
+        <label class="form-label">身分別</label>
+        <select class="form-select" id="f-case-category" style="width:100%">
+          <option value="第一類" ${c?.category==='第一類'?'selected':''}>第一類</option>
+          <option value="第二類" ${c?.category==='第二類'?'selected':''}>第二類</option>
+          <option value="第三類" ${c?.category==='第三類'?'selected':''}>第三類</option>
+          <option value="一般戶" ${c?.category==='一般戶'?'selected':''}>一般戶</option>
+        </select>
       </div>
       <div class="form-group">
         <label class="form-label">CMS等級 *</label>
@@ -346,13 +364,23 @@ function openCaseModal(caseId) {
         <input class="form-input" id="f-case-phone" value="${c ? c.phone : ''}" style="width:100%">
       </div>
       <div class="form-group">
+        <label class="form-label">主要聯絡人</label>
+        <input class="form-input" id="f-case-contact" value="${c ? (c.contactPerson||'') : ''}" style="width:100%">
+      </div>
+      <div class="form-group">
         <label class="form-label">收案日期 *</label>
         <input type="date" class="form-input" id="f-case-enroll" value="${c ? c.enrollDate : fmt(new Date())}" style="width:100%">
       </div>
     </div>
-    <div class="form-group">
-      <label class="form-label">住址</label>
-      <input class="form-input" id="f-case-address" value="${c ? c.address : ''}" style="width:100%">
+    <div class="form-row">
+      <div class="form-group" style="flex:2">
+        <label class="form-label">住址</label>
+        <input class="form-input" id="f-case-address" value="${c ? c.address : ''}" style="width:100%">
+      </div>
+      <div class="form-group">
+        <label class="form-label">里別</label>
+        <input class="form-input" id="f-case-district" value="${c ? (c.district||'') : ''}" style="width:100%">
+      </div>
     </div>
     <div class="form-row">
       <div class="form-group">
@@ -367,6 +395,10 @@ function openCaseModal(caseId) {
           ${nurs.map(n => `<option value="${n.id}" ${c?.nurseId===n.id?'selected':''}>${n.name} [${getCaseCountByMember(db,n.id)}/200]</option>`).join('')}
         </select>
       </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">備註</label>
+      <input class="form-input" id="f-case-notes" value="${c ? (c.notes||'') : ''}" style="width:100%">
     </div>
     <div class="form-group">
       <label class="form-label">是否為原住民/離島地區</label>
@@ -385,17 +417,24 @@ function saveCase(editId) {
   const idNumber = document.getElementById('f-case-id-number').value.trim();
   if (!name || !idNumber) { showToast('請填寫必要欄位', 'warning'); return; }
 
+  const doctorId = document.getElementById('f-case-doctor').value;
+  const docMember = findMember(db, doctorId);
+
   const data = {
     name,
     idNumber,
     gender: document.getElementById('f-case-gender').value,
-    age: parseInt(document.getElementById('f-case-age').value) || 0,
+    category: document.getElementById('f-case-category').value,
     cmsLevel: parseInt(document.getElementById('f-case-level').value),
     phone: document.getElementById('f-case-phone').value,
+    contactPerson: document.getElementById('f-case-contact').value,
     address: document.getElementById('f-case-address').value,
+    district: document.getElementById('f-case-district').value,
     enrollDate: document.getElementById('f-case-enroll').value,
-    doctorId: document.getElementById('f-case-doctor').value,
+    doctorId,
+    doctorName: docMember ? docMember.name : '',
     nurseId: document.getElementById('f-case-nurse').value,
+    notes: document.getElementById('f-case-notes').value,
     isRemoteArea: document.getElementById('f-case-remote').checked,
   };
 
@@ -411,9 +450,13 @@ function saveCase(editId) {
     Object.assign(c, data);
     showToast('個案已更新');
   } else {
-    const newId = 'C' + String(db.cases.length + 1).padStart(4, '0');
+    const caseNo = document.getElementById('f-case-no').value.trim() || ('C' + String(db.cases.length + 1).padStart(4, '0'));
     db.cases.push({
-      id: newId, ...data, status: 'active', closeReason: null, closeDate: null,
+      id: caseNo, ...data, status: 'active', closeReason: null, closeDate: null,
+      firstReferralDate: data.enrollDate,
+      nurseVisitDate: null, doctorVisitDate: null,
+      serviceDays: 0, monthlyTracking: {},
+      scheduledVisit: '', closeInfo: '',
       diagnoses: [], hasHypertension: false, hasDiabetes: false, hasHyperlipidemia: false,
       diseaseStatus: '穩定',
       acpExplained: false, acpExplainedDate: null,
@@ -438,39 +481,56 @@ function viewCase(caseId) {
   const svcThisMonth = getServiceThisMonth(db, c.id);
   const homeVisits = getHomeVisitsThisYear(db, c.id);
 
+  // 月度追蹤彙整
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const trackingHtml = monthNames.map((mName, idx) => {
+    const val = c.monthlyTracking ? c.monthlyTracking[String(idx + 1)] || '' : '';
+    const bgColor = val.includes('家') ? '#dcfce7' : val.includes('電') ? '#dbeafe' : val.includes('視') ? '#fef3c7' : val === '結' ? '#fee2e2' : '';
+    return `<td style="padding:4px 6px;text-align:center;font-size:.78rem;background:${bgColor}">${val || '-'}</td>`;
+  }).join('');
+
   const body = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
       <div>
         <h4 style="margin-bottom:.5rem;color:var(--gray-600)">基本資料</h4>
         <table style="font-size:.85rem;width:100%">
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">照管案號</td><td><strong>${c.id}</strong></td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">姓名</td><td><strong>${c.name}</strong></td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">身分證</td><td>${c.idNumber}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">年齡/性別</td><td>${c.age}歲 / ${c.gender==='M'?'男':'女'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">性別</td><td>${c.gender==='M'?'男':'女'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">身分別</td><td>${c.category || '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">CMS等級</td><td>第${c.cmsLevel}級</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">收案日期</td><td>${c.enrollDate}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">收案日期</td><td>${c.enrollDate || '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">服務天數</td><td>${c.serviceDays || '-'} 天</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">地址</td><td>${c.address}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">電話</td><td>${c.phone}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">離島/原民區</td><td>${c.isRemoteArea?'是':'否'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">里別</td><td>${c.district || '-'}</td></tr>
         </table>
       </div>
       <div>
-        <h4 style="margin-bottom:.5rem;color:var(--gray-600)">照護團隊與狀態</h4>
+        <h4 style="margin-bottom:.5rem;color:var(--gray-600)">聯絡與照護資訊</h4>
         <table style="font-size:.85rem;width:100%">
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">負責醫師</td><td>${doc?doc.name:'-'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師</td><td>${nurse?nurse.name:'-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">聯絡電話</td><td>${c.phone || '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">主要聯絡人</td><td>${c.contactPerson || '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">負責醫師</td><td>${doc ? doc.name : (c.doctorName || '-')}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師</td><td>${nurse ? nurse.name : '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">醫師家訪日</td><td>${c.doctorVisitDate || '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師家訪日</td><td>${c.nurseVisitDate || '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">意見書</td><td>${op ? opinionStatusBadge(op.status) + ' ' + op.issueDate : '尚未開立'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">本月服務</td><td>${svcThisMonth.length} 次</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">年度家訪</td><td>${homeVisits.length} 次 (上限4次)</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">病情狀態</td><td>${c.diseaseStatus}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">ACP說明</td><td>${c.acpExplained?'✅ '+c.acpExplainedDate:'❌'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">AD簽署</td><td>${c.acpSigned?'✅':'❌'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">預約家訪</td><td>${c.scheduledVisit || '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">備註</td><td>${c.notes || '-'}</td></tr>
+          ${c.status === 'closed' ? `<tr><td style="padding:2px 8px;color:var(--gray-500)">結案資訊</td><td style="color:#dc2626">${c.closeInfo || c.closeReason || '-'}</td></tr>` : ''}
         </table>
       </div>
     </div>
+    <h4 style="margin:1rem 0 .5rem;color:var(--gray-600)">115年度月追蹤紀錄 <small style="color:var(--gray-400)">(家=家訪 電=電訪 視=視訊 結=結案)</small></h4>
+    <table class="data-table" style="font-size:.82rem">
+      <thead><tr>${monthNames.map(m => `<th style="text-align:center">${m}</th>`).join('')}</tr></thead>
+      <tbody><tr>${trackingHtml}</tr></tbody>
+    </table>
     <h4 style="margin:1rem 0 .5rem;color:var(--gray-600)">疾病診斷</h4>
     <table class="data-table" style="font-size:.82rem">
       <thead><tr><th>ICD-10</th><th>疾病名稱</th><th>發病時間</th></tr></thead>
-      <tbody>${c.diagnoses.map(d => `<tr><td>${d.icd}</td><td>${d.name}</td><td>${d.onset}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--gray-400)">尚未記錄</td></tr>'}</tbody>
+      <tbody>${(c.diagnoses||[]).map(d => `<tr><td>${d.icd}</td><td>${d.name}</td><td>${d.onset}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--gray-400)">尚未記錄</td></tr>'}</tbody>
     </table>
     <h4 style="margin:1rem 0 .5rem;color:var(--gray-600)">近期服務紀錄 (最近5筆)</h4>
     <table class="data-table" style="font-size:.82rem">
