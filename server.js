@@ -4,7 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const XLSX = require('xlsx');
-const admin = require('firebase-admin');
+const Database = require('better-sqlite3');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
@@ -32,7 +32,7 @@ app.use(helmet({
       scriptSrcAttr: ["'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdn.jsdelivr.net"],
       fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdn.jsdelivr.net"],
-      connectSrc: ["'self'", "https://*.firebaseio.com", "https://*.googleapis.com", "https://firestore.googleapis.com"],
+      connectSrc: ["'self'"],
       imgSrc: ["'self'", "data:"],
       frameSrc: ["'none'"]
     }
@@ -58,7 +58,7 @@ app.use(express.json({ limit: '10mb' }));
 // ===== 靜態檔案限制：只提供安全的檔案 =====
 const ALLOWED_EXTENSIONS = ['.html', '.css', '.js', '.png', '.jpg', '.ico', '.svg', '.woff', '.woff2', '.ttf'];
 const BLOCKED_FILES = ['serviceAccountKey.json', 'users.json', 'package.json', 'package-lock.json',
-  'firebase.json', '.firebaserc', 'firestore.rules', 'railway.toml', '.gitignore'];
+  'firebase.json', '.firebaserc', 'firestore.rules', 'railway.toml', '.gitignore', 'homecare.db'];
 
 app.use((req, res, next) => {
   const reqPath = decodeURIComponent(req.path);
@@ -93,67 +93,109 @@ const apiLimiter = rateLimit({
 
 app.use('/api/', apiLimiter);
 
-// ===== Firebase Admin 初始化 =====
-let firestoreDb = null;
+// ===== SQLite 初始化 =====
+const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, 'homecare.db');
+const db = new Database(DB_PATH);
 
-function initFirebase() {
-  try {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-    } else if (fs.existsSync(path.join(__dirname, 'serviceAccountKey.json'))) {
-      const serviceAccount = require('./serviceAccountKey.json');
-      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-    } else {
-      admin.initializeApp({ projectId: 'homecare-system-f37ea' });
-    }
-    firestoreDb = admin.firestore();
-    console.log('Firebase Admin 初始化成功');
-  } catch (err) {
-    console.error('Firebase Admin 初始化失敗:', err.message);
-  }
-}
+// 啟用 WAL 模式提升效能
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
-initFirebase();
+// 建立資料表
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    displayName TEXT,
+    role TEXT DEFAULT 'user',
+    status TEXT DEFAULT 'active',
+    createdAt TEXT,
+    mustChangePassword INTEGER DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS collections (
+    collection TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (collection, doc_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT,
+    userId TEXT,
+    timestamp TEXT,
+    ip TEXT,
+    details TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS system_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
+`);
+
+console.log('SQLite 資料庫初始化成功:', DB_PATH);
 
 // ===== 稽核日誌 =====
-const AUDIT_COLLECTION = 'audit_logs';
+const stmtInsertAudit = db.prepare(
+  'INSERT INTO audit_logs (action, userId, timestamp, ip, details) VALUES (?, ?, ?, ?, ?)'
+);
 
-async function auditLog(action, userId, details = {}) {
-  const entry = {
-    action,
-    userId: userId || 'anonymous',
-    timestamp: new Date().toISOString(),
-    ip: details.ip || '',
-    details: details.msg || ''
-  };
-  console.log(`[AUDIT] ${entry.action} by ${entry.userId} - ${entry.details}`);
-  if (firestoreDb) {
-    try {
-      await firestoreDb.collection(AUDIT_COLLECTION).add(entry);
-    } catch (e) { /* 稽核寫入失敗不影響主流程 */ }
-  }
+function auditLog(action, userId, details = {}) {
+  const timestamp = new Date().toISOString();
+  const ip = details.ip || '';
+  const msg = details.msg || '';
+  console.log(`[AUDIT] ${action} by ${userId || 'anonymous'} - ${msg}`);
+  try {
+    stmtInsertAudit.run(action, userId || 'anonymous', timestamp, ip, msg);
+  } catch (e) { /* 稽核寫入失敗不影響主流程 */ }
 }
 
-// ===== 使用者資料（Firestore 持久化）=====
-const USERS_COLLECTION = 'users';
-let _usersCache = null;
+// ===== 使用者資料（SQLite 持久化）=====
 const BCRYPT_ROUNDS = 10;
 
-function getDefaultUsers() {
-  return [
-    {
-      id: crypto.randomUUID(),
-      username: '蕭輝哲',
-      password: bcrypt.hashSync('Hc@2025!Admin', BCRYPT_ROUNDS),
-      displayName: '蕭輝哲',
-      role: 'admin',
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      mustChangePassword: true
+// 預備語句
+const stmtGetUsers = db.prepare('SELECT * FROM users');
+const stmtUpsertUser = db.prepare(
+  `INSERT INTO users (id, username, password, displayName, role, status, createdAt, mustChangePassword)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(id) DO UPDATE SET username=excluded.username, password=excluded.password,
+   displayName=excluded.displayName, role=excluded.role, status=excluded.status,
+   mustChangePassword=excluded.mustChangePassword`
+);
+const stmtDeleteUser = db.prepare('DELETE FROM users WHERE id = ?');
+
+// 初始化預設管理員（僅在 users 表為空時）
+(function initDefaultAdmin() {
+  const count = db.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
+  if (count === 0) {
+    // 嘗試從 users.json 遷移
+    const localPath = path.join(__dirname, 'users.json');
+    if (fs.existsSync(localPath)) {
+      try {
+        const jsonUsers = JSON.parse(fs.readFileSync(localPath, 'utf8'));
+        const insert = db.transaction((users) => {
+          for (const u of users) {
+            stmtUpsertUser.run(u.id, u.username, u.password, u.displayName || u.username,
+              u.role || 'user', u.status || 'active', u.createdAt || new Date().toISOString(),
+              u.mustChangePassword ? 1 : 0);
+          }
+        });
+        insert(jsonUsers);
+        console.log(`從 users.json 遷移了 ${jsonUsers.length} 位使用者`);
+        return;
+      } catch (e) { console.error('users.json 遷移失敗:', e.message); }
     }
-  ];
-}
+    // 建立預設管理員
+    stmtUpsertUser.run(
+      crypto.randomUUID(), '蕭輝哲', bcrypt.hashSync('Hc@2025!Admin', BCRYPT_ROUNDS),
+      '蕭輝哲', 'admin', 'active', new Date().toISOString(), 1
+    );
+    console.log('已建立預設管理員帳號');
+  }
+})();
 
 // 密碼複雜度驗證
 function validatePassword(pw) {
@@ -164,11 +206,9 @@ function validatePassword(pw) {
 
 // 兼容舊 SHA-256 密碼的驗證函數
 function verifyPassword(inputPw, storedHash) {
-  // 新格式：bcrypt hash ($2a$ 或 $2b$ 開頭)
   if (storedHash.startsWith('$2')) {
     return bcrypt.compareSync(inputPw, storedHash);
   }
-  // 舊格式：SHA-256 hex (64 字元)
   if (storedHash.length === 64) {
     const sha256 = crypto.createHash('sha256').update(inputPw).digest('hex');
     return sha256 === storedHash;
@@ -177,65 +217,21 @@ function verifyPassword(inputPw, storedHash) {
 }
 
 // 遷移舊密碼為 bcrypt
-async function migratePasswordIfNeeded(user, inputPw) {
+function migratePasswordIfNeeded(user, inputPw) {
   if (!user.password.startsWith('$2')) {
-    user.password = bcrypt.hashSync(inputPw, BCRYPT_ROUNDS);
-    const users = await loadUsers();
-    await saveUsers(users);
+    const newHash = bcrypt.hashSync(inputPw, BCRYPT_ROUNDS);
+    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(newHash, user.id);
   }
 }
 
-async function loadUsers() {
-  if (_usersCache) return _usersCache;
-
-  if (firestoreDb) {
-    try {
-      const snapshot = await firestoreDb.collection(USERS_COLLECTION).get();
-      if (!snapshot.empty) {
-        _usersCache = snapshot.docs.map(doc => doc.data());
-        return _usersCache;
-      }
-    } catch (err) {
-      console.error('Firestore 讀取使用者失敗:', err.message);
-    }
-  }
-
-  const localPath = path.join(__dirname, 'users.json');
-  if (fs.existsSync(localPath)) {
-    try {
-      _usersCache = JSON.parse(fs.readFileSync(localPath, 'utf8'));
-      await saveUsers(_usersCache);
-      return _usersCache;
-    } catch (e) { }
-  }
-
-  _usersCache = getDefaultUsers();
-  await saveUsers(_usersCache);
-  return _usersCache;
+function loadUsers() {
+  return stmtGetUsers.all();
 }
 
-async function saveUsers(users) {
-  _usersCache = users;
-  if (firestoreDb) {
-    try {
-      const batch = firestoreDb.batch();
-      const snapshot = await firestoreDb.collection(USERS_COLLECTION).get();
-      snapshot.docs.forEach(doc => batch.delete(doc.ref));
-      users.forEach(user => {
-        const ref = firestoreDb.collection(USERS_COLLECTION).doc(user.id);
-        batch.set(ref, user);
-      });
-      await batch.commit();
-      return;
-    } catch (err) {
-      console.error('Firestore 寫入使用者失敗:', err.message);
-    }
-  }
-  try {
-    fs.writeFileSync(path.join(__dirname, 'users.json'), JSON.stringify(users, null, 2), 'utf8');
-  } catch (e) {
-    console.log('警告：使用者資料僅存於記憶體');
-  }
+function saveUser(user) {
+  stmtUpsertUser.run(user.id, user.username, user.password, user.displayName || user.username,
+    user.role || 'user', user.status || 'active', user.createdAt || new Date().toISOString(),
+    user.mustChangePassword ? 1 : 0);
 }
 
 // ===== Session 管理（含過期機制）=====
@@ -300,22 +296,22 @@ function requireAdmin(req, res, next) {
 // ===== API 路由 =====
 
 // 登入（含 rate limit）
-app.post('/api/login', loginLimiter, async (req, res) => {
+app.post('/api/login', loginLimiter, (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: '請輸入帳號和密碼' });
 
-  const users = await loadUsers();
+  const users = loadUsers();
   const user = users.find(u => u.username === username && u.status === 'active');
   if (!user || !verifyPassword(password, user.password)) {
-    await auditLog('LOGIN_FAILED', username, { ip: req.ip, msg: '帳號或密碼錯誤' });
+    auditLog('LOGIN_FAILED', username, { ip: req.ip, msg: '帳號或密碼錯誤' });
     return res.status(401).json({ error: '帳號或密碼錯誤' });
   }
 
   // 自動遷移舊 SHA-256 密碼為 bcrypt
-  await migratePasswordIfNeeded(user, password);
+  migratePasswordIfNeeded(user, password);
 
   const token = createSession(user);
-  await auditLog('LOGIN_SUCCESS', user.id, { ip: req.ip, msg: user.username });
+  auditLog('LOGIN_SUCCESS', user.id, { ip: req.ip, msg: user.username });
   res.json({
     token,
     user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role },
@@ -342,22 +338,22 @@ app.get('/api/me', requireAuth, (req, res) => {
 
 // ===== 使用者管理 (管理員) =====
 
-app.get('/api/users', requireAdmin, async (req, res) => {
-  const users = (await loadUsers()).map(u => ({
+app.get('/api/users', requireAdmin, (req, res) => {
+  const users = loadUsers().map(u => ({
     id: u.id, username: u.username, displayName: u.displayName,
     role: u.role, status: u.status, createdAt: u.createdAt
   }));
   res.json(users);
 });
 
-app.post('/api/users', requireAdmin, async (req, res) => {
+app.post('/api/users', requireAdmin, (req, res) => {
   const { username, password, displayName, role } = req.body;
   if (!username || !password) return res.status(400).json({ error: '帳號和密碼為必填' });
 
   const pwErr = validatePassword(password);
   if (pwErr) return res.status(400).json({ error: pwErr });
 
-  const users = await loadUsers();
+  const users = loadUsers();
   if (users.find(u => u.username === username)) {
     return res.status(400).json({ error: '此帳號已存在' });
   }
@@ -371,14 +367,13 @@ app.post('/api/users', requireAdmin, async (req, res) => {
     status: 'active',
     createdAt: new Date().toISOString()
   };
-  users.push(newUser);
-  await saveUsers(users);
-  await auditLog('USER_CREATED', req.session.userId, { ip: req.ip, msg: `新增使用者: ${username}` });
+  saveUser(newUser);
+  auditLog('USER_CREATED', req.session.userId, { ip: req.ip, msg: `新增使用者: ${username}` });
   res.json({ id: newUser.id, username: newUser.username, displayName: newUser.displayName, role: newUser.role });
 });
 
-app.put('/api/users/:id', requireAdmin, async (req, res) => {
-  const users = await loadUsers();
+app.put('/api/users/:id', requireAdmin, (req, res) => {
+  const users = loadUsers();
   const user = users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: '使用者不存在' });
 
@@ -393,32 +388,31 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
   if (role) user.role = role;
   if (status) user.status = status;
 
-  await saveUsers(users);
-  await auditLog('USER_UPDATED', req.session.userId, { ip: req.ip, msg: `修改使用者: ${user.username}` });
+  saveUser(user);
+  auditLog('USER_UPDATED', req.session.userId, { ip: req.ip, msg: `修改使用者: ${user.username}` });
   res.json({ id: user.id, username: user.username, displayName: user.displayName, role: user.role, status: user.status });
 });
 
-app.delete('/api/users/:id', requireAdmin, async (req, res) => {
-  let users = await loadUsers();
+app.delete('/api/users/:id', requireAdmin, (req, res) => {
+  const users = loadUsers();
   const idx = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: '使用者不存在' });
   if (users[idx].username === '蕭輝哲') return res.status(400).json({ error: '不能刪除系統管理員' });
 
   const deletedName = users[idx].username;
-  users.splice(idx, 1);
-  await saveUsers(users);
-  await auditLog('USER_DELETED', req.session.userId, { ip: req.ip, msg: `刪除使用者: ${deletedName}` });
+  stmtDeleteUser.run(users[idx].id);
+  auditLog('USER_DELETED', req.session.userId, { ip: req.ip, msg: `刪除使用者: ${deletedName}` });
   res.json({ ok: true });
 });
 
-app.put('/api/change-password', requireAuth, async (req, res) => {
+app.put('/api/change-password', requireAuth, (req, res) => {
   const { oldPassword, newPassword } = req.body;
   if (!oldPassword || !newPassword) return res.status(400).json({ error: '請輸入舊密碼和新密碼' });
 
   const pwErr = validatePassword(newPassword);
   if (pwErr) return res.status(400).json({ error: pwErr });
 
-  const users = await loadUsers();
+  const users = loadUsers();
   const user = users.find(u => u.id === req.session.userId);
   if (!user || !verifyPassword(oldPassword, user.password)) {
     return res.status(400).json({ error: '舊密碼錯誤' });
@@ -426,26 +420,34 @@ app.put('/api/change-password', requireAuth, async (req, res) => {
 
   user.password = bcrypt.hashSync(newPassword, BCRYPT_ROUNDS);
   user.mustChangePassword = false;
-  await saveUsers(users);
-  await auditLog('PASSWORD_CHANGED', req.session.userId, { ip: req.ip });
+  saveUser(user);
+  auditLog('PASSWORD_CHANGED', req.session.userId, { ip: req.ip });
   res.json({ ok: true });
 });
 
-// ===== 資料同步 API（取代前端直接寫 Firestore）=====
+// ===== 資料同步 API（SQLite）=====
 const DATA_COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
 
+// 預備語句
+const stmtGetCollection = db.prepare('SELECT data FROM collections WHERE collection = ?');
+const stmtUpsertDoc = db.prepare(
+  'INSERT OR REPLACE INTO collections (collection, doc_id, data) VALUES (?, ?, ?)'
+);
+const stmtDeleteCollection = db.prepare('DELETE FROM collections WHERE collection = ?');
+const stmtGetMeta = db.prepare('SELECT value FROM system_meta WHERE key = ?');
+const stmtSetMeta = db.prepare('INSERT OR REPLACE INTO system_meta (key, value) VALUES (?, ?)');
+
 // 讀取所有資料
-app.get('/api/data', requireAuth, async (req, res) => {
+app.get('/api/data', requireAuth, (req, res) => {
   try {
-    if (!firestoreDb) return res.status(503).json({ error: '資料庫未就緒' });
     const result = {};
     for (const col of DATA_COLLECTIONS) {
-      const snapshot = await firestoreDb.collection(col).get();
-      result[col] = snapshot.docs.map(doc => doc.data());
+      const rows = stmtGetCollection.all(col);
+      result[col] = rows.map(r => JSON.parse(r.data));
     }
-    const metaDoc = await firestoreDb.collection('system').doc('meta').get();
-    result.dataVersion = metaDoc.exists ? (metaDoc.data().dataVersion || null) : null;
-    await auditLog('DATA_READ', req.session.userId, { ip: req.ip, msg: `讀取資料: ${result.cases?.length || 0} 個案` });
+    const metaRow = stmtGetMeta.get('dataVersion');
+    result.dataVersion = metaRow ? metaRow.value : null;
+    auditLog('DATA_READ', req.session.userId, { ip: req.ip, msg: `讀取資料: ${result.cases?.length || 0} 個案` });
     res.json(result);
   } catch (err) {
     console.error('讀取資料失敗:', err);
@@ -454,13 +456,18 @@ app.get('/api/data', requireAuth, async (req, res) => {
 });
 
 // 儲存單一集合的項目
-app.put('/api/data/:collection/:id', requireAuth, async (req, res) => {
+app.put('/api/data/:collection/:id', requireAuth, (req, res) => {
   const { collection, id } = req.params;
   if (!DATA_COLLECTIONS.includes(collection)) return res.status(400).json({ error: '無效的集合' });
   if (!id) return res.status(400).json({ error: '缺少 ID' });
   try {
-    if (!firestoreDb) return res.status(503).json({ error: '資料庫未就緒' });
-    await firestoreDb.collection(collection).doc(id).set(req.body, { merge: true });
+    // merge: 讀取現有資料並合併
+    const existing = db.prepare('SELECT data FROM collections WHERE collection = ? AND doc_id = ?').get(collection, id);
+    let merged = req.body;
+    if (existing) {
+      merged = { ...JSON.parse(existing.data), ...req.body };
+    }
+    stmtUpsertDoc.run(collection, id, JSON.stringify(merged));
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: '儲存失敗' });
@@ -468,37 +475,31 @@ app.put('/api/data/:collection/:id', requireAuth, async (req, res) => {
 });
 
 // 批次上傳所有資料
-app.post('/api/data/sync', requireAuth, async (req, res) => {
+app.post('/api/data/sync', requireAuth, (req, res) => {
   try {
-    if (!firestoreDb) return res.status(503).json({ error: '資料庫未就緒' });
     const data = req.body;
     let totalItems = 0;
-    for (const col of DATA_COLLECTIONS) {
-      const items = data[col];
-      if (!items || !Array.isArray(items)) continue;
-      const snapshot = await firestoreDb.collection(col).get();
-      for (let i = 0; i < snapshot.docs.length; i += 400) {
-        const batch = firestoreDb.batch();
-        snapshot.docs.slice(i, i + 400).forEach(doc => batch.delete(doc.ref));
-        await batch.commit();
+
+    const syncAll = db.transaction(() => {
+      for (const col of DATA_COLLECTIONS) {
+        const items = data[col];
+        if (!items || !Array.isArray(items)) continue;
+        stmtDeleteCollection.run(col);
+        for (const item of items) {
+          if (item.id) {
+            stmtUpsertDoc.run(col, item.id, JSON.stringify(item));
+          }
+        }
+        totalItems += items.length;
       }
-      for (let i = 0; i < items.length; i += 400) {
-        const batch = firestoreDb.batch();
-        items.slice(i, i + 400).forEach(item => {
-          if (item.id) batch.set(firestoreDb.collection(col).doc(item.id), item);
-        });
-        await batch.commit();
+      if (data.dataVersion) {
+        stmtSetMeta.run('dataVersion', data.dataVersion);
+        stmtSetMeta.run('updatedAt', new Date().toISOString());
       }
-      totalItems += items.length;
-    }
-    if (data.dataVersion) {
-      await firestoreDb.collection('system').doc('meta').set({
-        initialized: true,
-        dataVersion: data.dataVersion,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-    }
-    await auditLog('DATA_SYNC', req.session.userId, { ip: req.ip, msg: `同步 ${totalItems} 筆資料` });
+    });
+
+    syncAll();
+    auditLog('DATA_SYNC', req.session.userId, { ip: req.ip, msg: `同步 ${totalItems} 筆資料` });
     res.json({ ok: true, totalItems });
   } catch (err) {
     console.error('資料同步失敗:', err);
@@ -581,7 +582,7 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
       };
     }).filter(c => c.idNumber);
 
-    auditLog('LCMS_SYNC', req.session.userId, { ip: req.ip, msg: `同步 ${lcmsCases.length} 筆個案` });
+    auditLog('LCMS_SYNC', req.session?.userId, { ip: req.ip, msg: `同步 ${lcmsCases.length} 筆個案` });
 
     res.json({
       total: lcmsCases.length,

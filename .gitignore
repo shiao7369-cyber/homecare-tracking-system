@@ -7,3 +7,4 @@ cases-data.js
 .DS_Store
 *.bak
 *.tmp
+*.db

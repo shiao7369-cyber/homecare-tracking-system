@@ -191,31 +191,44 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-// ===== Firestore 雲端資料讀寫 =====
+// ===== 雲端資料讀寫 =====
 const COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
 
 async function loadCloudData() {
   try {
     const cloudData = await apiCall('GET', '/api/data');
-    // 雲端有真實資料就直接使用，不因版本號不同而丟棄
     if (cloudData.cases && cloudData.cases.length > 0) {
+      // 伺服器有資料，直接使用
       db = { members: cloudData.members || [], cases: cloudData.cases || [],
              opinions: cloudData.opinions || [], services: cloudData.services || [],
              billings: cloudData.billings || [], diseases: [] };
-    } else if (typeof RAW_CASES_DATA !== 'undefined' && RAW_CASES_DATA.length > 0) {
-      // 雲端無資料，從本地原始資料初始化並上傳
-      db = generateDemoData();
-      syncDataToBackend(db).catch(e => console.error('雲端同步失敗:', e));
     } else {
-      db = generateDemoData();
+      // 伺服器無資料，嘗試從 localStorage 快取上傳
+      const cached = localStorage.getItem(DB_KEY);
+      if (cached) {
+        try {
+          db = JSON.parse(cached);
+          if (db.cases && db.cases.length > 0) {
+            console.log('伺服器無資料，從本地快取上傳...');
+            syncDataToBackend(db).catch(e => console.error('自動上傳失敗:', e));
+            return;
+          }
+        } catch (e) { /* 快取損壞 */ }
+      }
+      // 都沒有，產生初始資料
+      if (typeof RAW_CASES_DATA !== 'undefined' && RAW_CASES_DATA.length > 0) {
+        db = generateDemoData();
+        syncDataToBackend(db).catch(e => console.error('雲端同步失敗:', e));
+      } else {
+        db = generateDemoData();
+      }
     }
     saveDB_local(db);
   } catch (err) {
     console.error('雲端載入失敗，使用本地快取:', err);
-    // 優先使用 localStorage 快取，而非產生空的 demo 資料
     const cached = localStorage.getItem(DB_KEY);
     if (cached) {
-      try { db = JSON.parse(cached); return; } catch (e) { /* 快取損壞，繼續 fallback */ }
+      try { db = JSON.parse(cached); return; } catch (e) { /* 快取損壞 */ }
     }
     db = generateDemoData(); saveDB_local(db);
   }
