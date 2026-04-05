@@ -4,17 +4,6 @@
    - 資料同步：Firebase Firestore
    ======================================== */
 
-const firebaseConfig = {
-  apiKey: "AIzaSyA8-p3jb110_eML7tTwOhq09UouSDlR92o",
-  authDomain: "homecare-system-f37ea.firebaseapp.com",
-  projectId: "homecare-system-f37ea",
-  storageBucket: "homecare-system-f37ea.firebasestorage.app",
-  messagingSenderId: "501052920202",
-  appId: "1:501052920202:web:c838641f2bed35f81e7873"
-};
-
-firebase.initializeApp(firebaseConfig);
-const fsdb = firebase.firestore();
 
 // ===== Session 管理 =====
 let currentUser = null;
@@ -208,20 +197,17 @@ const COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
 async function loadCloudData() {
   try {
     const cloudData = await apiCall('GET', '/api/data');
-    const cloudVersion = cloudData.dataVersion || null;
-    const needsInit = !cloudVersion || cloudVersion !== DB_VERSION;
-    if (!needsInit && cloudData.cases && cloudData.cases.length > 0) {
+    // 雲端有真實資料就直接使用，不因版本號不同而丟棄
+    if (cloudData.cases && cloudData.cases.length > 0) {
       db = { members: cloudData.members || [], cases: cloudData.cases || [],
              opinions: cloudData.opinions || [], services: cloudData.services || [],
              billings: cloudData.billings || [], diseases: [] };
-      if (db.cases.length === 0 && typeof RAW_CASES_DATA !== 'undefined' && RAW_CASES_DATA.length > 0) {
-        db = generateDemoData();
-        syncDataToBackend(db).catch(e => console.error('背景上傳失敗:', e));
-        saveDB_local(db); return;
-      }
-    } else {
-      db = generateDemoData(); saveDB_local(db);
+    } else if (typeof RAW_CASES_DATA !== 'undefined' && RAW_CASES_DATA.length > 0) {
+      // 雲端無資料，從本地原始資料初始化並上傳
+      db = generateDemoData();
       syncDataToBackend(db).catch(e => console.error('雲端同步失敗:', e));
+    } else {
+      db = generateDemoData();
     }
     saveDB_local(db);
   } catch (err) {
