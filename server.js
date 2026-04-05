@@ -57,7 +57,7 @@ app.use(express.json({ limit: '1mb' }));
 // ===== 靜態檔案限制：只提供安全的檔案 =====
 const ALLOWED_EXTENSIONS = ['.html', '.css', '.js', '.png', '.jpg', '.ico', '.svg', '.woff', '.woff2', '.ttf'];
 const BLOCKED_FILES = ['serviceAccountKey.json', 'users.json', 'package.json', 'package-lock.json',
-  'firebase.json', '.firebaserc', 'firestore.rules', 'railway.toml', '.gitignore', 'cases-data.js'];
+  'firebase.json', '.firebaserc', 'firestore.rules', 'railway.toml', '.gitignore'];
 
 app.use((req, res, next) => {
   const reqPath = decodeURIComponent(req.path);
