@@ -2,7 +2,10 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const multer = require('multer');
+const XLSX = require('xlsx');
 const app = express();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
@@ -216,6 +219,98 @@ app.put('/api/change-password', requireAuth, (req, res) => {
   user.password = hashPassword(newPassword);
   saveUsers(users);
   res.json({ ok: true });
+});
+
+// ===== LCMS 同步 API =====
+app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: '請上傳 .xls 檔案' });
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+    if (rows.length === 0) {
+      return res.status(400).json({ error: '檔案中無資料' });
+    }
+
+    // Map LCMS columns to system fields
+    const lcmsCases = rows.map(row => {
+      // Extract CMS level number from "6級" format
+      const cmsRaw = String(row['CMS'] || '');
+      const cmsMatch = cmsRaw.match(/(\d+)/);
+      const cmsLevel = cmsMatch ? parseInt(cmsMatch[1]) : null;
+
+      // Extract age number from "74歲" format
+      const ageRaw = String(row['年齡'] || '');
+      const ageMatch = ageRaw.match(/(\d+)/);
+      const age = ageMatch ? parseInt(ageMatch[1]) : null;
+
+      // Map welfare category
+      const welfareRaw = String(row['福利身分'] || '');
+      let category = '';
+      if (welfareRaw.includes('第一類')) category = '第一類';
+      else if (welfareRaw.includes('第二類')) category = '第二類';
+      else if (welfareRaw.includes('第三類')) category = '第三類';
+
+      // Convert ROC date to AD date
+      function rocToAD(rocDate) {
+        if (!rocDate) return '';
+        const str = String(rocDate).trim();
+        const m = str.match(/^(\d{2,3})\/(\d{1,2})\/(\d{1,2})$/);
+        if (!m) return '';
+        const year = parseInt(m[1]) + 1911;
+        const month = m[2].padStart(2, '0');
+        const day = m[3].padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+
+      // Case status mapping
+      const statusRaw = String(row['案件狀態'] || '');
+      let status = 'active';
+      if (statusRaw.includes('結案') || statusRaw.includes('終止')) {
+        status = 'closed';
+      }
+
+      return {
+        caseNo: String(row['案號'] || '').trim(),
+        lcmsStatus: statusRaw.trim(),
+        name: String(row['姓名'] || '').trim(),
+        idNumber: String(row['身分證號'] || '').trim().toUpperCase(),
+        birthday: rocToAD(row['出生日期']),
+        age: age,
+        cmsLevel: cmsLevel,
+        category: category,
+        welfareRaw: welfareRaw.trim(),
+        district: String(row['居住地(行政區)'] || '').trim(),
+        village: String(row['居住地(村里)'] || '').trim(),
+        registeredCity: String(row['戶籍地(縣市)'] || '').trim(),
+        registeredDistrict: String(row['戶籍地(行政區)'] || '').trim(),
+        livingCity: String(row['居住地(縣市)'] || '').trim(),
+        careCenter: String(row['照管中心'] || '').trim(),
+        careManager: String(row['照管專員'] || '').trim(),
+        unitName: String(row['A單位名稱'] || '').trim(),
+        lcmsOpinionCount: parseInt(row['意見書數量(當年度)']) || 0,
+        lcmsBillingCount: parseInt(row['申報紀錄數量(當年度)']) || 0,
+        hospital: String(row['主責居家醫師院所'] || '').trim(),
+        enrollDate: rocToAD(row['派案日期']),
+        homeVisitDates: String(row['家訪日期'] || '').trim(),
+        status: status
+      };
+    }).filter(c => c.idNumber); // Filter out rows without ID number
+
+    res.json({
+      total: lcmsCases.length,
+      cases: lcmsCases,
+      columns: Object.keys(rows[0] || {})
+    });
+  } catch (err) {
+    console.error('LCMS 解析失敗:', err);
+    res.status(500).json({ error: 'LCMS 檔案解析失敗: ' + err.message });
+  }
 });
 
 // SPA fallback

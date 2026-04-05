@@ -431,3 +431,429 @@ async function deleteUser(id, username) {
     alert(err.message);
   }
 }
+
+// ===== LCMS 批次同步 =====
+function syncLCMS() {
+  // Create a hidden file input and trigger it
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.xls,.xlsx';
+  fileInput.style.display = 'none';
+  document.body.appendChild(fileInput);
+
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    document.body.removeChild(fileInput);
+    if (!file) return;
+
+    // Upload and parse
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/lcms-sync', {
+        method: 'POST',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {},
+        body: formData
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '上傳失敗');
+
+      // Compare with current db.cases
+      const lcmsCases = data.cases;
+      const diff = computeLCMSDiff(lcmsCases);
+      showLCMSDiffModal(diff, lcmsCases);
+    } catch (err) {
+      alert('LCMS 同步失敗: ' + err.message);
+    }
+  });
+
+  fileInput.click();
+}
+
+function computeLCMSDiff(lcmsCases) {
+  const systemCases = (db && db.cases) ? db.cases : [];
+
+  // Build lookup maps by idNumber (case-insensitive)
+  const systemMap = {};
+  systemCases.forEach(c => {
+    if (c.idNumber) systemMap[c.idNumber.toUpperCase()] = c;
+  });
+  const lcmsMap = {};
+  lcmsCases.forEach(c => {
+    if (c.idNumber) lcmsMap[c.idNumber.toUpperCase()] = c;
+  });
+
+  const newCases = [];      // In LCMS but not in system
+  const changed = [];       // In both but fields differ
+  const possiblyClosed = []; // In system (active) but not in LCMS
+
+  // Check LCMS cases against system
+  lcmsCases.forEach(lc => {
+    const key = lc.idNumber.toUpperCase();
+    const sc = systemMap[key];
+    if (!sc) {
+      newCases.push(lc);
+    } else {
+      // Compare fields
+      const diffs = [];
+      if (lc.cmsLevel != null && sc.cmsLevel != null && String(lc.cmsLevel) !== String(sc.cmsLevel)) {
+        diffs.push({ field: 'CMS等級', oldVal: sc.cmsLevel, newVal: lc.cmsLevel });
+      }
+      if (lc.category && sc.category && lc.category !== sc.category) {
+        diffs.push({ field: '福利身分', oldVal: sc.category, newVal: lc.category });
+      }
+      if (lc.district && sc.district && lc.district !== sc.district) {
+        diffs.push({ field: '行政區', oldVal: sc.district, newVal: lc.district });
+      }
+      if (lc.age != null && sc.age != null && String(lc.age) !== String(sc.age)) {
+        diffs.push({ field: '年齡', oldVal: sc.age, newVal: lc.age });
+      }
+      if (lc.caseNo && sc.caseNo && lc.caseNo !== sc.caseNo) {
+        diffs.push({ field: '案號', oldVal: sc.caseNo, newVal: lc.caseNo });
+      }
+      if (lc.enrollDate && sc.enrollDate && lc.enrollDate !== sc.enrollDate) {
+        diffs.push({ field: '派案日期', oldVal: sc.enrollDate, newVal: lc.enrollDate });
+      }
+      if (lc.careManager && lc.careManager !== (sc.careManager || '')) {
+        diffs.push({ field: '照管專員', oldVal: sc.careManager || '(空)', newVal: lc.careManager });
+      }
+      if (lc.village && lc.village !== (sc.village || '')) {
+        diffs.push({ field: '村里', oldVal: sc.village || '(空)', newVal: lc.village });
+      }
+      if (lc.unitName && lc.unitName !== (sc.unitName || '')) {
+        diffs.push({ field: 'A單位名稱', oldVal: sc.unitName || '(空)', newVal: lc.unitName });
+      }
+      // Always update LCMS-only fields if they have values
+      if (lc.lcmsOpinionCount != null && lc.lcmsOpinionCount !== (sc.lcmsOpinionCount || 0)) {
+        diffs.push({ field: '意見書數量(年度)', oldVal: sc.lcmsOpinionCount || 0, newVal: lc.lcmsOpinionCount });
+      }
+      if (lc.lcmsBillingCount != null && lc.lcmsBillingCount !== (sc.lcmsBillingCount || 0)) {
+        diffs.push({ field: '申報紀錄數量(年度)', oldVal: sc.lcmsBillingCount || 0, newVal: lc.lcmsBillingCount });
+      }
+      if (lc.homeVisitDates && lc.homeVisitDates !== (sc.homeVisitDates || '')) {
+        diffs.push({ field: '家訪日期', oldVal: sc.homeVisitDates || '(空)', newVal: lc.homeVisitDates });
+      }
+      if (diffs.length > 0) {
+        changed.push({ lcms: lc, system: sc, diffs: diffs });
+      }
+    }
+  });
+
+  // Check system cases not in LCMS (possibly closed)
+  systemCases.forEach(sc => {
+    if (sc.status !== 'active') return;
+    const key = (sc.idNumber || '').toUpperCase();
+    if (key && !lcmsMap[key]) {
+      possiblyClosed.push(sc);
+    }
+  });
+
+  return {
+    lcmsTotal: lcmsCases.length,
+    systemTotal: systemCases.filter(c => c.status === 'active').length,
+    newCases: newCases,
+    changed: changed,
+    possiblyClosed: possiblyClosed
+  };
+}
+
+function showLCMSDiffModal(diff, lcmsCases) {
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody = document.getElementById('modal-body');
+  const modalFooter = document.getElementById('modal-footer');
+
+  modalTitle.textContent = 'LCMS 同步報告';
+
+  // Build summary
+  let html = `
+    <div style="max-height:70vh;overflow-y:auto;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.75rem;margin-bottom:1rem;">
+        <div style="background:#e3f2fd;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#1565c0;">${diff.lcmsTotal}</div>
+          <div style="font-size:0.85rem;color:#555;">LCMS 個案數</div>
+        </div>
+        <div style="background:#f3e5f5;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#7b1fa2;">${diff.systemTotal}</div>
+          <div style="font-size:0.85rem;color:#555;">系統收案數</div>
+        </div>
+        <div style="background:#e8f5e9;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#2e7d32;">${diff.newCases.length}</div>
+          <div style="font-size:0.85rem;color:#555;">新個案</div>
+        </div>
+        <div style="background:#fff3e0;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#e65100;">${diff.changed.length}</div>
+          <div style="font-size:0.85rem;color:#555;">異動</div>
+        </div>
+        <div style="background:#fce4ec;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#c62828;">${diff.possiblyClosed.length}</div>
+          <div style="font-size:0.85rem;color:#555;">可能結案</div>
+        </div>
+      </div>
+  `;
+
+  // New cases section
+  if (diff.newCases.length > 0) {
+    html += `
+      <details open style="margin-bottom:1rem;">
+        <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#2e7d32;margin-bottom:0.5rem;">
+          新個案 (${diff.newCases.length})
+        </summary>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lcms-new-all" onchange="toggleLCMSCheckAll(this, 'lcms-new-chk')" checked></th>
+                <th>案號</th><th>姓名</th><th>身分證號</th><th>CMS</th><th>身分別</th><th>行政區</th><th>派案日期</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${diff.newCases.map((c, i) => `
+                <tr>
+                  <td><input type="checkbox" class="lcms-new-chk" data-idx="${i}" checked></td>
+                  <td>${c.caseNo}</td>
+                  <td>${c.name}</td>
+                  <td>${c.idNumber}</td>
+                  <td>${c.cmsLevel || '-'}</td>
+                  <td>${c.category || '-'}</td>
+                  <td>${c.district || '-'}</td>
+                  <td>${c.enrollDate || '-'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  // Changed cases section
+  if (diff.changed.length > 0) {
+    html += `
+      <details open style="margin-bottom:1rem;">
+        <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#e65100;margin-bottom:0.5rem;">
+          異動 (${diff.changed.length})
+        </summary>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lcms-chg-all" onchange="toggleLCMSCheckAll(this, 'lcms-chg-chk')" checked></th>
+                <th>姓名</th><th>身分證號</th><th>異動欄位</th><th>原值</th><th>新值</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${diff.changed.map((item, i) => item.diffs.map((d, j) => `
+                <tr>
+                  ${j === 0 ? `
+                    <td rowspan="${item.diffs.length}"><input type="checkbox" class="lcms-chg-chk" data-idx="${i}" checked></td>
+                    <td rowspan="${item.diffs.length}">${item.lcms.name}</td>
+                    <td rowspan="${item.diffs.length}">${item.lcms.idNumber}</td>
+                  ` : ''}
+                  <td><span style="color:#e65100;font-weight:500;">${d.field}</span></td>
+                  <td style="color:#999;text-decoration:line-through;">${d.oldVal}</td>
+                  <td style="color:#2e7d32;font-weight:500;">${d.newVal}</td>
+                </tr>
+              `).join('')).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  // Possibly closed section
+  if (diff.possiblyClosed.length > 0) {
+    html += `
+      <details style="margin-bottom:1rem;">
+        <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#c62828;margin-bottom:0.5rem;">
+          可能結案 (${diff.possiblyClosed.length}) — 系統中收案但 LCMS 無資料
+        </summary>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lcms-close-all" onchange="toggleLCMSCheckAll(this, 'lcms-close-chk')"></th>
+                <th>姓名</th><th>身分證號</th><th>CMS</th><th>負責醫師</th><th>收案日期</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${diff.possiblyClosed.map((c, i) => `
+                <tr>
+                  <td><input type="checkbox" class="lcms-close-chk" data-idx="${i}"></td>
+                  <td>${c.name || '-'}</td>
+                  <td>${c.idNumber || '-'}</td>
+                  <td>${c.cmsLevel || '-'}</td>
+                  <td>${c.doctorName || '-'}</td>
+                  <td>${c.enrollDate || '-'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  if (diff.newCases.length === 0 && diff.changed.length === 0 && diff.possiblyClosed.length === 0) {
+    html += '<p style="text-align:center;color:#666;padding:2rem;">資料完全一致，無需同步。</p>';
+  }
+
+  html += '</div>';
+  modalBody.innerHTML = html;
+
+  // Store diff data for apply functions
+  window._lcmsDiff = diff;
+
+  const hasChanges = diff.newCases.length > 0 || diff.changed.length > 0 || diff.possiblyClosed.length > 0;
+  modalFooter.innerHTML = `
+    <button class="btn btn-outline" onclick="closeModal()">關閉</button>
+    ${hasChanges ? '<button class="btn btn-primary" onclick="applyLCMSSync()">套用勾選項目</button>' : ''}
+  `;
+
+  document.getElementById('modal-overlay').classList.add('active');
+
+  // Widen modal for diff view
+  const modal = document.getElementById('modal');
+  modal.style.maxWidth = '900px';
+  modal.style.width = '90vw';
+}
+
+function toggleLCMSCheckAll(masterCheckbox, className) {
+  const checkboxes = document.querySelectorAll('.' + className);
+  checkboxes.forEach(cb => { cb.checked = masterCheckbox.checked; });
+}
+
+function applyLCMSSync() {
+  const diff = window._lcmsDiff;
+  if (!diff) return;
+
+  let addedCount = 0;
+  let updatedCount = 0;
+  let closedCount = 0;
+
+  // Apply new cases
+  const newCheckboxes = document.querySelectorAll('.lcms-new-chk:checked');
+  newCheckboxes.forEach(cb => {
+    const idx = parseInt(cb.dataset.idx);
+    const lc = diff.newCases[idx];
+    if (!lc) return;
+
+    // Generate new case ID
+    const maxId = db.cases.reduce((max, c) => {
+      const num = parseInt((c.id || '').replace('C', ''));
+      return num > max ? num : max;
+    }, 0);
+    const newId = 'C' + String(maxId + 1 + addedCount).padStart(3, '0');
+
+    const newCase = {
+      id: newId,
+      caseNo: lc.caseNo || '',
+      name: lc.name,
+      idNumber: lc.idNumber,
+      gender: '',
+      cmsLevel: lc.cmsLevel,
+      category: lc.category || '',
+      district: lc.district || '',
+      village: lc.village || '',
+      address: '',
+      status: 'active',
+      doctorName: '',
+      enrollDate: lc.enrollDate || '',
+      age: lc.age,
+      careManager: lc.careManager || '',
+      unitName: lc.unitName || '',
+      lcmsOpinionCount: lc.lcmsOpinionCount || 0,
+      lcmsBillingCount: lc.lcmsBillingCount || 0,
+      homeVisitDates: lc.homeVisitDates || '',
+      // Default empty values for other standard fields
+      phone: '',
+      diagnosis: '',
+      notes: '',
+      opinionDate: '',
+      opinionExpiry: '',
+      acpStatus: 'not_started',
+      adStatus: 'not_started',
+      acpExplainDate: '',
+      adExplainDate: '',
+      acpSignDate: '',
+      nhiCardDate: '',
+      familyExplainDate: ''
+    };
+
+    db.cases.push(newCase);
+    addedCount++;
+  });
+
+  // Apply changes
+  const chgCheckboxes = document.querySelectorAll('.lcms-chg-chk:checked');
+  chgCheckboxes.forEach(cb => {
+    const idx = parseInt(cb.dataset.idx);
+    const item = diff.changed[idx];
+    if (!item) return;
+
+    const sc = db.cases.find(c => c.idNumber && c.idNumber.toUpperCase() === item.lcms.idNumber.toUpperCase());
+    if (!sc) return;
+
+    // Apply each field diff
+    item.diffs.forEach(d => {
+      switch (d.field) {
+        case 'CMS等級': sc.cmsLevel = item.lcms.cmsLevel; break;
+        case '福利身分': sc.category = item.lcms.category; break;
+        case '行政區': sc.district = item.lcms.district; break;
+        case '年齡': sc.age = item.lcms.age; break;
+        case '案號': sc.caseNo = item.lcms.caseNo; break;
+        case '派案日期': sc.enrollDate = item.lcms.enrollDate; break;
+        case '照管專員': sc.careManager = item.lcms.careManager; break;
+        case '村里': sc.village = item.lcms.village; break;
+        case 'A單位名稱': sc.unitName = item.lcms.unitName; break;
+        case '意見書數量(年度)': sc.lcmsOpinionCount = item.lcms.lcmsOpinionCount; break;
+        case '申報紀錄數量(年度)': sc.lcmsBillingCount = item.lcms.lcmsBillingCount; break;
+        case '家訪日期': sc.homeVisitDates = item.lcms.homeVisitDates; break;
+      }
+    });
+    updatedCount++;
+  });
+
+  // Apply closures
+  const closeCheckboxes = document.querySelectorAll('.lcms-close-chk:checked');
+  closeCheckboxes.forEach(cb => {
+    const idx = parseInt(cb.dataset.idx);
+    const sc = diff.possiblyClosed[idx];
+    if (!sc) return;
+
+    const target = db.cases.find(c => c.id === sc.id);
+    if (target) {
+      target.status = 'closed';
+      closedCount++;
+    }
+  });
+
+  // Save
+  if (addedCount > 0 || updatedCount > 0 || closedCount > 0) {
+    saveDB(db);
+  }
+
+  closeModal();
+
+  // Reset modal width
+  const modal = document.getElementById('modal');
+  modal.style.maxWidth = '';
+  modal.style.width = '';
+
+  // Show result
+  const msgs = [];
+  if (addedCount > 0) msgs.push(`新增 ${addedCount} 個案`);
+  if (updatedCount > 0) msgs.push(`更新 ${updatedCount} 個案`);
+  if (closedCount > 0) msgs.push(`結案 ${closedCount} 個案`);
+
+  if (msgs.length > 0) {
+    alert('LCMS 同步完成：\n' + msgs.join('\n'));
+    // Refresh UI
+    if (typeof renderDashboard === 'function') renderDashboard();
+    if (typeof renderCases === 'function') renderCases();
+    if (typeof updateAlertBadge === 'function') updateAlertBadge();
+  } else {
+    alert('未選取任何項目，未做變更。');
+  }
+}
