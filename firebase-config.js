@@ -211,7 +211,12 @@ async function loadCloudData() {
     }
     saveDB_local(db);
   } catch (err) {
-    console.error('雲端載入失敗，使用本地資料:', err);
+    console.error('雲端載入失敗，使用本地快取:', err);
+    // 優先使用 localStorage 快取，而非產生空的 demo 資料
+    const cached = localStorage.getItem(DB_KEY);
+    if (cached) {
+      try { db = JSON.parse(cached); return; } catch (e) { /* 快取損壞，繼續 fallback */ }
+    }
     db = generateDemoData(); saveDB_local(db);
   }
 }
