@@ -8,7 +8,6 @@ const admin = require('firebase-admin');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
-const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
 
 const app = express();
@@ -143,7 +142,7 @@ const BCRYPT_ROUNDS = 10;
 function getDefaultUsers() {
   return [
     {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       username: '蕭輝哲',
       password: bcrypt.hashSync('Hc@2025!Admin', BCRYPT_ROUNDS),
       displayName: '蕭輝哲',
@@ -363,7 +362,7 @@ app.post('/api/users', requireAdmin, async (req, res) => {
   }
 
   const newUser = {
-    id: uuidv4(),
+    id: crypto.randomUUID(),
     username,
     password: bcrypt.hashSync(password, BCRYPT_ROUNDS),
     displayName: displayName || username,
