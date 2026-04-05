@@ -4,6 +4,8 @@
    ======================================== */
 
 const DB_KEY = 'homecare_db';
+const DB_VERSION_KEY = 'homecare_db_version';
+const DB_VERSION = '2.0_real_data';
 
 // ===== 真實個案資料（由個案清冊匯入） =====
 // 此處為外部載入的 JSON，初次載入時由 loadRawCases() 提供
@@ -332,6 +334,11 @@ function monthsBetween(a, b) {
 
 // ===== 資料存取 =====
 function loadDB() {
+  const savedVersion = localStorage.getItem(DB_VERSION_KEY);
+  if (savedVersion !== DB_VERSION) {
+    localStorage.removeItem(DB_KEY);
+    localStorage.setItem(DB_VERSION_KEY, DB_VERSION);
+  }
   const raw = localStorage.getItem(DB_KEY);
   if (raw) {
     try { return JSON.parse(raw); } catch (e) { }
