@@ -303,8 +303,26 @@ function generateDemoData() {
   const rawCases = loadRawCases();
   const doctors = getRealDoctors();
   const nurses = getRealNurses();
-  const members = [...doctors, ...nurses];
+  let members = [...doctors, ...nurses];
   const diseases = getDiseases();
+
+  // 保留使用者已修改過的成員資料（如科別變更）
+  try {
+    const saved = localStorage.getItem(DB_KEY);
+    if (saved) {
+      const oldDb = JSON.parse(saved);
+      if (oldDb.members && oldDb.members.length > 0) {
+        members = members.map(m => {
+          const existing = oldDb.members.find(om => om.id === m.id);
+          return existing ? { ...m, ...existing } : m;
+        });
+        // 加入使用者自行新增的成員
+        oldDb.members.forEach(om => {
+          if (!members.find(m => m.id === om.id)) members.push(om);
+        });
+      }
+    }
+  } catch (e) { }
 
   const cases = convertRawCases(rawCases);
   const opinions = generateOpinionsFromCases(cases.filter(c => c.status === 'active'));
