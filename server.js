@@ -8,15 +8,18 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-// ===== 使用者資料檔 =====
-const USERS_FILE = path.join(__dirname, 'users.json');
+// ===== 使用者資料 =====
+// 嘗試多個路徑寫入（Railway 可能限制 __dirname 寫入）
+const USERS_PATHS = [
+  path.join(__dirname, 'users.json'),
+  '/tmp/users.json'
+];
 
-function loadUsers() {
-  if (fs.existsSync(USERS_FILE)) {
-    try { return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8')); } catch (e) { }
-  }
-  // 預設管理員帳號
-  const defaultUsers = [
+// 記憶體快取
+let _usersCache = null;
+
+function getDefaultUsers() {
+  return [
     {
       id: 'U001',
       username: '蕭輝哲',
@@ -27,12 +30,36 @@ function loadUsers() {
       createdAt: new Date().toISOString()
     }
   ];
-  saveUsers(defaultUsers);
-  return defaultUsers;
+}
+
+function loadUsers() {
+  if (_usersCache) return _usersCache;
+
+  for (const fp of USERS_PATHS) {
+    if (fs.existsSync(fp)) {
+      try {
+        _usersCache = JSON.parse(fs.readFileSync(fp, 'utf8'));
+        return _usersCache;
+      } catch (e) { }
+    }
+  }
+
+  _usersCache = getDefaultUsers();
+  saveUsers(_usersCache);
+  return _usersCache;
 }
 
 function saveUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+  _usersCache = users;
+  for (const fp of USERS_PATHS) {
+    try {
+      fs.writeFileSync(fp, JSON.stringify(users, null, 2), 'utf8');
+      return;
+    } catch (e) {
+      console.log(`無法寫入 ${fp}: ${e.message}`);
+    }
+  }
+  console.log('警告：使用者資料僅存於記憶體');
 }
 
 function hashPassword(pw) {
@@ -81,8 +108,14 @@ app.post('/api/login', (req, res) => {
   if (!username || !password) return res.status(400).json({ error: '請輸入帳號和密碼' });
 
   const users = loadUsers();
+  console.log(`登入嘗試: "${username}", 使用者數: ${users.length}, 帳號列表: ${users.map(u=>u.username).join(',')}`);
   const user = users.find(u => u.username === username && u.status === 'active');
-  if (!user || user.password !== hashPassword(password)) {
+  if (!user) {
+    console.log(`找不到使用者: "${username}"`);
+    return res.status(401).json({ error: '帳號或密碼錯誤' });
+  }
+  if (user.password !== hashPassword(password)) {
+    console.log(`密碼不符: stored=${user.password.substring(0,8)}..., input=${hashPassword(password).substring(0,8)}...`);
     return res.status(401).json({ error: '帳號或密碼錯誤' });
   }
 
