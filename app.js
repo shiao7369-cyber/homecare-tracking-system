@@ -5,6 +5,25 @@
 let db;
 let currentMemberTab = 'doctors';
 
+// ===== 安全工具函數 =====
+function esc(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function maskId(idNumber) {
+  if (!idNumber || idNumber.length < 4) return '***';
+  return idNumber.substring(0, 3) + '****' + idNumber.substring(idNumber.length - 3);
+}
+
+function escCSV(val) {
+  if (val == null) return '';
+  const s = String(val);
+  if (/^[=+\-@\t\r]/.test(s)) return "'" + s;
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
 // ===== 初始化 =====
 // 由 firebase-config.js 的 onAuthStateChanged 觸發
 document.addEventListener('DOMContentLoaded', () => {
@@ -135,7 +154,7 @@ function showToast(msg, type='success') {
   const container = document.getElementById('toast-container');
   const toast = document.createElement('div');
   toast.className = 'toast toast-' + type;
-  toast.innerHTML = msg;
+  toast.textContent = msg;
   container.appendChild(toast);
   setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
 }
@@ -207,7 +226,7 @@ function renderDashboard() {
     const pct = (count / 200 * 100).toFixed(0);
     const color = count > 180 ? 'var(--danger)' : (count > 140 ? 'var(--warning)' : 'var(--primary)');
     return `<div class="load-bar-item">
-      <div class="load-bar-name" title="${d.name}">${d.name}</div>
+      <div class="load-bar-name" title="${esc(d.name)}">${esc(d.name)}</div>
       <div class="load-bar-track">
         <div class="load-bar-fill" style="width:${pct}%;background:${color}">${count}</div>
       </div>
@@ -223,7 +242,7 @@ function renderDashboard() {
     const n = findMember(db, s.nurseId);
     return `<div class="recent-item">
       <div class="recent-type ${s.type}">${serviceTypeIcon(s.type)}</div>
-      <div class="recent-info"><strong>${c ? c.name : s.caseId}</strong> — ${serviceTypeLabel(s.type)}${n ? ' / ' + n.name : ''}</div>
+      <div class="recent-info"><strong>${c ? esc(c.name) : esc(s.caseId)}</strong> — ${serviceTypeLabel(s.type)}${n ? ' / ' + esc(n.name) : ''}</div>
       <div class="recent-date">${s.date}</div>
     </div>`;
   }).join('');
@@ -236,8 +255,8 @@ function renderDashboard() {
     : dashAlerts.map(a => `<div class="alert-item level-${a.level}">
       <div class="alert-icon">${a.level === 'danger' ? '🔴' : (a.level === 'warning' ? '🟡' : '🔵')}</div>
       <div class="alert-body">
-        <div class="alert-title">${a.title}</div>
-        <div class="alert-desc">${a.desc}</div>
+        <div class="alert-title">${esc(a.title)}</div>
+        <div class="alert-desc">${esc(a.desc)}</div>
       </div>
       <div class="alert-action"><button class="btn btn-xs btn-outline" onclick="switchPage('${a.page || 'alerts'}')">處理</button></div>
     </div>`).join('');
@@ -252,7 +271,7 @@ function populateDoctorSelects() {
     const el = document.getElementById(id);
     if (!el) return;
     const firstOpt = el.options[0].outerHTML;
-    el.innerHTML = firstOpt + docs.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+    el.innerHTML = firstOpt + docs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
   });
 }
 
@@ -293,16 +312,16 @@ function renderCases() {
     const curMonth = String(new Date().getMonth() + 1);
     const trackingText = c.monthlyTracking ? c.monthlyTracking[curMonth] || '' : '';
     const trackBadge = trackingText
-      ? `<span class="badge badge-success" title="${trackingText}">${trackingText}</span>`
+      ? `<span class="badge badge-success" title="${esc(trackingText)}">${esc(trackingText)}</span>`
       : (c.status === 'active' ? '<span class="badge badge-danger">未追蹤</span>' : '-');
 
     return `<tr class="${c.status === 'active' && !trackingText ? 'row-warning' : ''}">
       <td><small>${c.id}</small></td>
-      <td><strong>${c.name}</strong></td>
-      <td><small>${c.category || '-'}</small></td>
+      <td><strong>${esc(c.name)}</strong></td>
+      <td><small>${esc(c.category || '-')}</small></td>
       <td><span class="badge badge-primary">${c.cmsLevel || '-'}</span></td>
-      <td><small>${c.district || '-'}</small></td>
-      <td>${doc ? doc.name : (c.doctorName || '-')}</td>
+      <td><small>${esc(c.district || '-')}</small></td>
+      <td>${doc ? esc(doc.name) : esc(c.doctorName || '-')}</td>
       <td>${opBadge}</td>
       <td>${trackBadge}</td>
       <td>${statusBadge}</td>
@@ -327,11 +346,11 @@ function openCaseModal(caseId) {
       </div>
       <div class="form-group">
         <label class="form-label">姓名 *</label>
-        <input class="form-input" id="f-case-name" value="${c ? c.name : ''}" style="width:100%">
+        <input class="form-input" id="f-case-name" value="${c ? esc(c.name) : ''}" style="width:100%">
       </div>
       <div class="form-group">
         <label class="form-label">身分證字號 *</label>
-        <input class="form-input" id="f-case-id-number" value="${c ? c.idNumber : ''}" style="width:100%">
+        <input class="form-input" id="f-case-id-number" value="${c ? esc(c.idNumber) : ''}" style="width:100%">
       </div>
     </div>
     <div class="form-row">
@@ -361,11 +380,11 @@ function openCaseModal(caseId) {
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">聯絡電話</label>
-        <input class="form-input" id="f-case-phone" value="${c ? c.phone : ''}" style="width:100%">
+        <input class="form-input" id="f-case-phone" value="${c ? esc(c.phone) : ''}" style="width:100%">
       </div>
       <div class="form-group">
         <label class="form-label">主要聯絡人</label>
-        <input class="form-input" id="f-case-contact" value="${c ? (c.contactPerson||'') : ''}" style="width:100%">
+        <input class="form-input" id="f-case-contact" value="${c ? esc(c.contactPerson||'') : ''}" style="width:100%">
       </div>
       <div class="form-group">
         <label class="form-label">收案日期 *</label>
@@ -375,30 +394,30 @@ function openCaseModal(caseId) {
     <div class="form-row">
       <div class="form-group" style="flex:2">
         <label class="form-label">住址</label>
-        <input class="form-input" id="f-case-address" value="${c ? c.address : ''}" style="width:100%">
+        <input class="form-input" id="f-case-address" value="${c ? esc(c.address) : ''}" style="width:100%">
       </div>
       <div class="form-group">
         <label class="form-label">里別</label>
-        <input class="form-input" id="f-case-district" value="${c ? (c.district||'') : ''}" style="width:100%">
+        <input class="form-input" id="f-case-district" value="${c ? esc(c.district||'') : ''}" style="width:100%">
       </div>
     </div>
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">負責醫師 *</label>
         <select class="form-select" id="f-case-doctor" style="width:100%">
-          ${docs.map(d => `<option value="${d.id}" ${c?.doctorId===d.id?'selected':''}>${d.name} (${d.specialty}) [${getCaseCountByMember(db,d.id)}/200]</option>`).join('')}
+          ${docs.map(d => `<option value="${d.id}" ${c?.doctorId===d.id?'selected':''}>${esc(d.name)} (${esc(d.specialty)}) [${getCaseCountByMember(db,d.id)}/200]</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
         <label class="form-label">個案管理師 *</label>
         <select class="form-select" id="f-case-nurse" style="width:100%">
-          ${nurs.map(n => `<option value="${n.id}" ${c?.nurseId===n.id?'selected':''}>${n.name} [${getCaseCountByMember(db,n.id)}/200]</option>`).join('')}
+          ${nurs.map(n => `<option value="${n.id}" ${c?.nurseId===n.id?'selected':''}>${esc(n.name)} [${getCaseCountByMember(db,n.id)}/200]</option>`).join('')}
         </select>
       </div>
     </div>
     <div class="form-group">
       <label class="form-label">備註</label>
-      <input class="form-input" id="f-case-notes" value="${c ? (c.notes||'') : ''}" style="width:100%">
+      <input class="form-input" id="f-case-notes" value="${c ? esc(c.notes||'') : ''}" style="width:100%">
     </div>
     <div class="form-group">
       <label class="form-label">是否為原住民/離島地區</label>
@@ -495,30 +514,30 @@ function viewCase(caseId) {
         <h4 style="margin-bottom:.5rem;color:var(--gray-600)">基本資料</h4>
         <table style="font-size:.85rem;width:100%">
           <tr><td style="padding:2px 8px;color:var(--gray-500)">照管案號</td><td><strong>${c.id}</strong></td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">姓名</td><td><strong>${c.name}</strong></td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">身分證</td><td>${c.idNumber}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">姓名</td><td><strong>${esc(c.name)}</strong></td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">身分證</td><td>${maskId(c.idNumber)}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">性別</td><td>${c.gender==='M'?'男':'女'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">身分別</td><td>${c.category || '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">身分別</td><td>${esc(c.category || '-')}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">CMS等級</td><td>第${c.cmsLevel}級</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">收案日期</td><td>${c.enrollDate || '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">服務天數</td><td>${c.serviceDays || '-'} 天</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">地址</td><td>${c.address}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">里別</td><td>${c.district || '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">地址</td><td>${esc(c.address)}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">里別</td><td>${esc(c.district || '-')}</td></tr>
         </table>
       </div>
       <div>
         <h4 style="margin-bottom:.5rem;color:var(--gray-600)">聯絡與照護資訊</h4>
         <table style="font-size:.85rem;width:100%">
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">聯絡電話</td><td>${c.phone || '-'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">主要聯絡人</td><td>${c.contactPerson || '-'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">負責醫師</td><td>${doc ? doc.name : (c.doctorName || '-')}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師</td><td>${nurse ? nurse.name : '-'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">聯絡電話</td><td>${esc(c.phone || '-')}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">主要聯絡人</td><td>${esc(c.contactPerson || '-')}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">負責醫師</td><td>${doc ? esc(doc.name) : esc(c.doctorName || '-')}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師</td><td>${nurse ? esc(nurse.name) : '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">醫師家訪日</td><td>${c.doctorVisitDate || '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師家訪日</td><td>${c.nurseVisitDate || '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">意見書</td><td>${op ? opinionStatusBadge(op.status) + ' ' + op.issueDate : '尚未開立'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">預約家訪</td><td>${c.scheduledVisit || '-'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">備註</td><td>${c.notes || '-'}</td></tr>
-          ${c.status === 'closed' ? `<tr><td style="padding:2px 8px;color:var(--gray-500)">結案資訊</td><td style="color:#dc2626">${c.closeInfo || c.closeReason || '-'}</td></tr>` : ''}
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">預約家訪</td><td>${esc(c.scheduledVisit || '-')}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">備註</td><td>${esc(c.notes || '-')}</td></tr>
+          ${c.status === 'closed' ? `<tr><td style="padding:2px 8px;color:var(--gray-500)">結案資訊</td><td style="color:#dc2626">${esc(c.closeInfo || c.closeReason || '-')}</td></tr>` : ''}
         </table>
       </div>
     </div>
@@ -530,7 +549,7 @@ function viewCase(caseId) {
     <h4 style="margin:1rem 0 .5rem;color:var(--gray-600)">疾病診斷</h4>
     <table class="data-table" style="font-size:.82rem">
       <thead><tr><th>ICD-10</th><th>疾病名稱</th><th>發病時間</th></tr></thead>
-      <tbody>${(c.diagnoses||[]).map(d => `<tr><td>${d.icd}</td><td>${d.name}</td><td>${d.onset}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--gray-400)">尚未記錄</td></tr>'}</tbody>
+      <tbody>${(c.diagnoses||[]).map(d => `<tr><td>${esc(d.icd)}</td><td>${esc(d.name)}</td><td>${esc(d.onset)}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--gray-400)">尚未記錄</td></tr>'}</tbody>
     </table>
     <h4 style="margin:1rem 0 .5rem;color:var(--gray-600)">近期服務紀錄 (最近5筆)</h4>
     <table class="data-table" style="font-size:.82rem">
@@ -547,7 +566,7 @@ function viewCase(caseId) {
     <button class="btn btn-outline" onclick="closeModal()">關閉</button>
     <button class="btn btn-primary" onclick="closeModal();openCaseModal('${c.id}')">編輯</button>
   `;
-  openModal('個案詳情 — ' + c.name, body, footer);
+  openModal('個案詳情 — ' + esc(c.name), body, footer);
 }
 
 function closeCase(caseId) {
@@ -603,9 +622,9 @@ function renderMembers() {
     const pct = (count / 200 * 100).toFixed(0);
     const loadColor = count > 180 ? 'danger' : (count > 140 ? 'warning' : 'success');
     return `<tr>
-      <td><strong>${m.name}</strong></td>
+      <td><strong>${esc(m.name)}</strong></td>
       <td>${m.role === 'doctor' ? '醫師' : '個管師'}</td>
-      <td>${m.specialty}</td>
+      <td>${esc(m.specialty)}</td>
       <td>${count}</td>
       <td>200</td>
       <td><span class="badge badge-${loadColor}">${pct}%</span></td>
@@ -623,7 +642,7 @@ function openMemberModal(memberId) {
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">姓名 *</label>
-        <input class="form-input" id="f-member-name" value="${m?m.name:''}" style="width:100%">
+        <input class="form-input" id="f-member-name" value="${m?esc(m.name):''}" style="width:100%">
       </div>
       <div class="form-group">
         <label class="form-label">職稱 *</label>
@@ -636,11 +655,11 @@ function openMemberModal(memberId) {
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">專科</label>
-        <input class="form-input" id="f-member-spec" value="${m?m.specialty:''}" style="width:100%">
+        <input class="form-input" id="f-member-spec" value="${m?esc(m.specialty):''}" style="width:100%">
       </div>
       <div class="form-group">
         <label class="form-label">聯絡電話</label>
-        <input class="form-input" id="f-member-phone" value="${m?m.phone:''}" style="width:100%">
+        <input class="form-input" id="f-member-phone" value="${m?esc(m.phone):''}" style="width:100%">
       </div>
     </div>
     <div class="form-group">
@@ -717,10 +736,10 @@ function renderServices() {
     const n = findMember(db, s.nurseId);
     return `<tr>
       <td>${s.date}</td>
-      <td>${c ? c.name : s.caseId}</td>
+      <td>${c ? esc(c.name) : esc(s.caseId)}</td>
       <td><span class="badge badge-${s.type==='home'?'primary':(s.type==='phone'?'success':'info')}">${serviceTypeLabel(s.type)}</span></td>
       <td>${respondentLabel(s.respondent)}</td>
-      <td>${n ? n.name : '-'}</td>
+      <td>${n ? esc(n.name) : '-'}</td>
       <td>${s.bpMeasured ? s.bpSystolic + '/' + s.bpDiastolic : '-'}</td>
       <td>${s.hba1cMonitored ? s.hba1cValue + '%' : '-'}</td>
       <td>${s.lipidMonitored ? '✅' : '-'}</td>
@@ -740,7 +759,7 @@ function openServiceModal() {
       <div class="form-group">
         <label class="form-label">個案 *</label>
         <select class="form-select" id="f-svc-case" style="width:100%">
-          ${activeCases.map(c => `<option value="${c.id}">${c.name} (${c.id})</option>`).join('')}
+          ${activeCases.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.id)})</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -760,7 +779,7 @@ function openServiceModal() {
       <div class="form-group">
         <label class="form-label">個管師</label>
         <select class="form-select" id="f-svc-nurse" style="width:100%">
-          ${nurses.map(n => `<option value="${n.id}">${n.name}</option>`).join('')}
+          ${nurses.map(n => `<option value="${n.id}">${esc(n.name)}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -905,10 +924,10 @@ function viewService(svcId) {
   const n = findMember(db, s.nurseId);
   const body = `
     <table style="font-size:.85rem;width:100%">
-      <tr><td style="padding:4px 8px;color:var(--gray-500);width:120px">個案</td><td>${c?c.name:s.caseId}</td></tr>
+      <tr><td style="padding:4px 8px;color:var(--gray-500);width:120px">個案</td><td>${c?esc(c.name):esc(s.caseId)}</td></tr>
       <tr><td style="padding:4px 8px;color:var(--gray-500)">日期</td><td>${s.date}</td></tr>
       <tr><td style="padding:4px 8px;color:var(--gray-500)">形式</td><td>${serviceTypeLabel(s.type)}</td></tr>
-      <tr><td style="padding:4px 8px;color:var(--gray-500)">個管師</td><td>${n?n.name:'-'}</td></tr>
+      <tr><td style="padding:4px 8px;color:var(--gray-500)">個管師</td><td>${n?esc(n.name):'-'}</td></tr>
       <tr><td style="padding:4px 8px;color:var(--gray-500)">受訪者</td><td>${respondentLabel(s.respondent)}</td></tr>
       <tr><td style="padding:4px 8px;color:var(--gray-500)">血壓</td><td>${s.bpMeasured?s.bpSystolic+'/'+s.bpDiastolic+' mmHg':'未測量'}</td></tr>
       <tr><td style="padding:4px 8px;color:var(--gray-500)">糖化血紅素</td><td>${s.hba1cMonitored?(s.hba1cValue||'已測'):'未測'}</td></tr>
@@ -918,7 +937,7 @@ function viewService(svcId) {
       <tr><td style="padding:4px 8px;color:var(--gray-500)">慢性病評估</td><td>${s.chronicDiseaseEval?'✅':'❌'}</td></tr>
       <tr><td style="padding:4px 8px;color:var(--gray-500)">轉介</td><td>${s.referralLtc?'長照 ':''} ${s.referralMedical?'醫療':''} ${!s.referralLtc&&!s.referralMedical?'無':''}</td></tr>
       <tr><td style="padding:4px 8px;color:var(--gray-500)">申報狀態</td><td>${billingStatusBadge(s.billingStatus)}</td></tr>
-      <tr><td style="padding:4px 8px;color:var(--gray-500)">備註</td><td>${s.notes||'-'}</td></tr>
+      <tr><td style="padding:4px 8px;color:var(--gray-500)">備註</td><td>${esc(s.notes||'-')}</td></tr>
     </table>
   `;
   openModal('服務紀錄詳情', body, '<button class="btn btn-outline" onclick="closeModal()">關閉</button>');
@@ -970,8 +989,8 @@ function renderOpinions() {
     const daysLeft = daysBetween(fmt(now), op.expiryDate);
     const rowClass = op.status === 'expired' ? 'row-danger' : (op.status === 'expiring' ? 'row-warning' : '');
     return `<tr class="${rowClass}">
-      <td>${c ? c.name : op.caseId}</td>
-      <td>${d ? d.name : '-'}</td>
+      <td>${c ? esc(c.name) : esc(op.caseId)}</td>
+      <td>${d ? esc(d.name) : '-'}</td>
       <td>${op.issueDate}</td>
       <td>第${op.sequence}次</td>
       <td>${op.homeVisitDate}</td>
@@ -993,13 +1012,13 @@ function openOpinionModal() {
       <div class="form-group">
         <label class="form-label">個案 *</label>
         <select class="form-select" id="f-op-case" style="width:100%">
-          ${activeCases.map(c => `<option value="${c.id}">${c.name} (${c.id})</option>`).join('')}
+          ${activeCases.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.id)})</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
         <label class="form-label">開立醫師 *</label>
         <select class="form-select" id="f-op-doctor" style="width:100%">
-          ${docs.map(d => `<option value="${d.id}">${d.name}</option>`).join('')}
+          ${docs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -1135,10 +1154,10 @@ function renderBilling() {
     return `<tr>
       <td><input type="checkbox" class="billing-cb" data-id="${b.id}" ${b.status==='pending'?'':'disabled'}></td>
       <td>${b.billingMonth}</td>
-      <td>${c ? c.name : b.caseId}</td>
+      <td>${c ? esc(c.name) : esc(b.caseId)}</td>
       <td><span class="badge badge-info">${b.code}</span></td>
       <td>${b.serviceDate}</td>
-      <td>${m ? m.name : '-'}</td>
+      <td>${m ? esc(m.name) : '-'}</td>
       <td>$${b.amount.toLocaleString()}</td>
       <td>${billingStatusBadge(b.status)}</td>
       <td>${b.status === 'pending' ? `<button class="btn btn-xs btn-primary" onclick="submitSingleBilling('${b.id}')">申報</button>` : ''}</td>
@@ -1181,7 +1200,7 @@ function generateBilling() {
   items.forEach(b => {
     const c = findCase(db, b.caseId);
     const m = findMember(db, b.memberId);
-    csv += `${b.billingMonth},${b.caseId},${c?c.name:''},${b.code},${b.serviceDate},${m?m.name:''},${b.amount},${b.status}\n`;
+    csv += `${escCSV(b.billingMonth)},${escCSV(b.caseId)},${c?escCSV(c.name):''},${escCSV(b.code)},${escCSV(b.serviceDate)},${m?escCSV(m.name):''},${b.amount},${escCSV(b.status)}\n`;
   });
   downloadCSV(csv, `申報清冊_${month}.csv`);
 }
@@ -1269,7 +1288,7 @@ function renderKPI() {
     const dk = computeKPI(d.id);
     const allMet = dk.every(k => k.value >= k.target);
     return `<tr>
-      <td><strong>${d.name}</strong></td>
+      <td><strong>${esc(d.name)}</strong></td>
       <td>${getCaseCountByMember(db, d.id)}</td>
       ${dk.map(k => {
         const color = k.value >= k.target ? 'success' : (k.value >= k.target*0.7 ? 'warning' : 'danger');
@@ -1326,8 +1345,8 @@ function renderACP() {
       : '<span class="badge badge-gray">未開始</span>';
 
     return `<tr class="${over6m && !c.acpExplained ? 'row-warning' : ''}">
-      <td><strong>${c.name}</strong></td>
-      <td>${d ? d.name : '-'}</td>
+      <td><strong>${esc(c.name)}</strong></td>
+      <td>${d ? esc(d.name) : '-'}</td>
       <td>${c.enrollDate}</td>
       <td>${over6m ? '<span class="badge badge-warning">已滿6月</span>' : '<span class="badge badge-gray">未滿</span>'}</td>
       <td>${c.acpExplained ? '✅ ' + (c.acpExplainedDate || '') : '❌'}</td>
@@ -1345,7 +1364,7 @@ function updateACP(caseId) {
   const c = findCase(db, caseId);
   if (!c) return;
   const body = `
-    <p style="margin-bottom:1rem;font-weight:600">個案：${c.name} (${c.id})</p>
+    <p style="margin-bottom:1rem;font-weight:600">個案：${esc(c.name)} (${esc(c.id)})</p>
     <div class="form-group"><label class="form-checkbox"><input type="checkbox" id="f-acp-explained" ${c.acpExplained?'checked':''}> 已完成 ACP 說明</label></div>
     <div class="form-group"><label class="form-checkbox"><input type="checkbox" id="f-ad-explained" ${c.adExplained?'checked':''}> 已完成 AD 說明</label></div>
     <div class="form-group"><label class="form-checkbox"><input type="checkbox" id="f-acp-signed" ${c.acpSigned?'checked':''}> 已簽署 ACP</label></div>
@@ -1404,7 +1423,7 @@ function generateAlerts() {
     if (svcThisMonth.length === 0) {
       const lastSvc = db.services.filter(s => s.caseId === c.id).sort((a,b) => b.date.localeCompare(a.date))[0];
       alerts.push({
-        level: 'danger', title: `${c.name} 本月尚未服務`,
+        level: 'danger', title: `${esc(c.name)} 本月尚未服務`,
         desc: `上次服務: ${lastSvc ? lastSvc.date : '無紀錄'}`,
         page: 'services', caseId: c.id,
       });
@@ -1416,26 +1435,26 @@ function generateAlerts() {
       const enrollDays = daysBetween(c.enrollDate, fmt(now));
       if (enrollDays > 14) {
         alerts.push({
-          level: 'danger', title: `${c.name} 意見書逾期未開立`,
+          level: 'danger', title: `${esc(c.name)} 意見書逾期未開立`,
           desc: `收案日 ${c.enrollDate}，已超過14天`,
           page: 'opinion', caseId: c.id,
         });
       } else {
         alerts.push({
-          level: 'warning', title: `${c.name} 意見書待開立`,
+          level: 'warning', title: `${esc(c.name)} 意見書待開立`,
           desc: `收案日 ${c.enrollDate}，剩餘 ${14 - enrollDays} 天`,
           page: 'opinion', caseId: c.id,
         });
       }
     } else if (op.status === 'expired') {
       alerts.push({
-        level: 'danger', title: `${c.name} 意見書已過期`,
+        level: 'danger', title: `${esc(c.name)} 意見書已過期`,
         desc: `到期日 ${op.expiryDate}，請盡速更新`,
         page: 'opinion', caseId: c.id,
       });
     } else if (op.status === 'expiring') {
       alerts.push({
-        level: 'warning', title: `${c.name} 意見書即將到期`,
+        level: 'warning', title: `${esc(c.name)} 意見書即將到期`,
         desc: `到期日 ${op.expiryDate}`,
         page: 'opinion', caseId: c.id,
       });
@@ -1448,7 +1467,7 @@ function generateAlerts() {
       const daysSince = daysBetween(lastHome.date, fmt(now));
       if (daysSince > 120) {
         alerts.push({
-          level: 'warning', title: `${c.name} 超過4個月未家訪`,
+          level: 'warning', title: `${esc(c.name)} 超過4個月未家訪`,
           desc: `上次家訪 ${lastHome.date}，已 ${daysSince} 天`,
           page: 'services', caseId: c.id,
         });
@@ -1459,7 +1478,7 @@ function generateAlerts() {
     const sixMonthAgo = new Date(now); sixMonthAgo.setMonth(sixMonthAgo.getMonth() - 6);
     if (new Date(c.enrollDate) <= sixMonthAgo && !c.acpExplained) {
       alerts.push({
-        level: 'info', title: `${c.name} 收案滿6月尚未完成ACP說明`,
+        level: 'info', title: `${esc(c.name)} 收案滿6月尚未完成ACP說明`,
         desc: `收案日 ${c.enrollDate}`,
         page: 'acp', caseId: c.id,
       });
@@ -1472,13 +1491,13 @@ function generateAlerts() {
       const monthsSinceJoin = monthsBetween(m.joinDate, fmt(now));
       if (monthsSinceJoin >= 6) {
         alerts.push({
-          level: 'danger', title: `${m.name} ACP訓練逾期`,
+          level: 'danger', title: `${esc(m.name)} ACP訓練逾期`,
           desc: `加入日 ${m.joinDate}，已超過6個月仍未完成`,
           page: 'members',
         });
       } else {
         alerts.push({
-          level: 'warning', title: `${m.name} ACP訓練待完成`,
+          level: 'warning', title: `${esc(m.name)} ACP訓練待完成`,
           desc: `需於加入後6個月內完成，剩餘 ${6 - monthsSinceJoin} 個月`,
           page: 'members',
         });
@@ -1532,8 +1551,8 @@ function renderAlertList(alerts) {
     : alerts.map(a => `<div class="alert-item level-${a.level}">
       <div class="alert-icon">${a.level === 'danger' ? '🔴' : (a.level === 'warning' ? '🟡' : '🔵')}</div>
       <div class="alert-body">
-        <div class="alert-title">${a.title}</div>
-        <div class="alert-desc">${a.desc}</div>
+        <div class="alert-title">${esc(a.title)}</div>
+        <div class="alert-desc">${esc(a.desc)}</div>
       </div>
       <div class="alert-action">
         <button class="btn btn-xs btn-outline" onclick="switchPage('${a.page || 'dashboard'}')">前往處理</button>
@@ -1587,7 +1606,7 @@ function generateReport(type) {
       db.cases.forEach(c => {
         const d = findMember(db, c.doctorId);
         const n = findMember(db, c.nurseId);
-        csv += `${c.id},${c.name},${c.gender==='M'?'男':'女'},${c.age},${c.cmsLevel},${d?d.name:''},${n?n.name:''},${c.enrollDate},${c.status==='active'?'收案中':'已結案'},"${c.diagnoses.map(d=>d.name).join(';')}",${c.acpExplained?'已說明':'未說明'}\n`;
+        csv += `${escCSV(c.id)},${escCSV(c.name)},${c.gender==='M'?'男':'女'},${c.age},${c.cmsLevel},${d?escCSV(d.name):''},${n?escCSV(n.name):''},${escCSV(c.enrollDate)},${c.status==='active'?'收案中':'已結案'},${escCSV(c.diagnoses.map(d=>d.name).join(';'))},${c.acpExplained?'已說明':'未說明'}\n`;
       });
       break;
     }
@@ -1611,7 +1630,7 @@ function generateReport(type) {
       csv += '姓名,職稱,收案數,血壓測量率,血糖監測率,血脂監測率,ACP訓練,ACP/AD完成率\n';
       getDoctors(db).filter(d => d.status === 'active').forEach(d => {
         const kpi = computeKPI(d.id);
-        csv += `${d.name},醫師,${getCaseCountByMember(db,d.id)},${kpi[0].value.toFixed(0)}%,${kpi[1].value.toFixed(0)}%,${kpi[2].value.toFixed(0)}%,${d.acpTrained?'是':'否'},${kpi[4].value.toFixed(0)}%\n`;
+        csv += `${escCSV(d.name)},醫師,${getCaseCountByMember(db,d.id)},${kpi[0].value.toFixed(0)}%,${kpi[1].value.toFixed(0)}%,${kpi[2].value.toFixed(0)}%,${d.acpTrained?'是':'否'},${kpi[4].value.toFixed(0)}%\n`;
       });
       break;
     }
@@ -1684,7 +1703,7 @@ function handleImport(e) {
   reader.onload = function(ev) {
     try {
       const data = JSON.parse(ev.target.result);
-      if (data.cases && data.members) {
+      if (data.cases && data.members && Array.isArray(data.cases) && Array.isArray(data.members)) {
         db = data;
         saveDB(db);
         showToast('資料匯入成功');

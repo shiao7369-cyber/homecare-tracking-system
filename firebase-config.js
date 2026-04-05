@@ -18,7 +18,24 @@ const fsdb = firebase.firestore();
 
 // ===== Session 管理 =====
 let currentUser = null;
-let authToken = localStorage.getItem('auth_token');
+let authToken = null;
+
+// 安全讀取 token（檢查儲存時間，超過 8 小時自動清除）
+(function loadToken() {
+  const stored = sessionStorage.getItem('auth_token');
+  const storedAt = parseInt(sessionStorage.getItem('auth_token_time') || '0');
+  if (stored && (Date.now() - storedAt < 8 * 60 * 60 * 1000)) {
+    authToken = stored;
+  } else {
+    sessionStorage.removeItem('auth_token');
+    sessionStorage.removeItem('auth_token_time');
+    // 遷移舊 localStorage token
+    const old = localStorage.getItem('auth_token');
+    if (old) {
+      sessionStorage.removeItem('auth_token'); sessionStorage.removeItem('auth_token_time');
+    }
+  }
+})();
 
 async function apiCall(method, url, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -40,7 +57,8 @@ async function doLogin() {
     const data = await apiCall('POST', '/api/login', { username, password: pw });
     authToken = data.token;
     currentUser = data.user;
-    localStorage.setItem('auth_token', authToken);
+    sessionStorage.setItem('auth_token', authToken);
+    sessionStorage.setItem('auth_token_time', String(Date.now()));
     onLoginSuccess();
   } catch (err) {
     showLoginError(err.message);
@@ -51,7 +69,7 @@ function doLogout() {
   apiCall('POST', '/api/logout').catch(() => {});
   authToken = null;
   currentUser = null;
-  localStorage.removeItem('auth_token');
+  sessionStorage.removeItem('auth_token'); sessionStorage.removeItem('auth_token_time');
   document.getElementById('login-page').style.display = 'flex';
   document.getElementById('sidebar').style.display = 'none';
   document.getElementById('main-content').style.display = 'none';
@@ -97,7 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       currentUser = await apiCall('GET', '/api/me');
       onLoginSuccess();
     } catch (e) {
-      localStorage.removeItem('auth_token');
+      sessionStorage.removeItem('auth_token'); sessionStorage.removeItem('auth_token_time');
       authToken = null;
     }
   }
@@ -296,14 +314,14 @@ async function renderUserManagement() {
           <tbody>
             ${users.map(u => `
               <tr>
-                <td><strong>${u.username}</strong></td>
-                <td>${u.displayName}</td>
+                <td><strong>${esc(u.username)}</strong></td>
+                <td>${esc(u.displayName)}</td>
                 <td><span class="badge ${u.role === 'admin' ? 'badge-danger' : 'badge-info'}">${u.role === 'admin' ? '管理員' : '使用者'}</span></td>
                 <td><span class="badge ${u.status === 'active' ? 'badge-success' : 'badge-warning'}">${u.status === 'active' ? '啟用' : '停用'}</span></td>
                 <td>${u.createdAt ? u.createdAt.substring(0, 10) : '-'}</td>
                 <td>
-                  <button class="btn btn-sm btn-outline" onclick="openEditUserModal('${u.id}','${u.username}','${u.displayName}','${u.role}','${u.status}')">編輯</button>
-                  ${u.username !== '蕭輝哲' ? `<button class="btn btn-sm btn-outline" style="color:red;border-color:red" onclick="deleteUser('${u.id}','${u.username}')">刪除</button>` : ''}
+                  <button class="btn btn-sm btn-outline" onclick="openEditUserModal('${esc(u.id)}','${esc(u.username)}','${esc(u.displayName)}','${esc(u.role)}','${esc(u.status)}')">編輯</button>
+                  ${u.username !== '蕭輝哲' ? `<button class="btn btn-sm btn-outline" style="color:red;border-color:red" onclick="deleteUser('${esc(u.id)}','${esc(u.username)}')">刪除</button>` : ''}
                 </td>
               </tr>
             `).join('')}
@@ -312,7 +330,7 @@ async function renderUserManagement() {
       </div>
     `;
   } catch (err) {
-    container.innerHTML = `<p style="color:red">載入失敗: ${err.message}</p>`;
+    container.innerHTML = `<p style="color:red">載入失敗: ${esc(err.message)}</p>`;
   }
 }
 
@@ -367,18 +385,18 @@ async function addUser() {
 function openEditUserModal(id, username, displayName, role, status) {
   document.getElementById('modal-title').textContent = '編輯使用者 - ' + username;
   document.getElementById('modal-body').innerHTML = `
-    <input type="hidden" id="f-edit-id" value="${id}">
+    <input type="hidden" id="f-edit-id" value="${esc(id)}">
     <div class="form-group">
       <label class="form-label">帳號</label>
-      <input class="form-input" id="f-edit-username" value="${username}">
+      <input class="form-input" id="f-edit-username" value="${esc(username)}">
     </div>
     <div class="form-group">
-      <label class="form-label">新密碼 (留空不修改)</label>
+      <label class="form-label">新密碼 (留空不修改，至少8字元含英數)</label>
       <input class="form-input" id="f-edit-password" type="password" placeholder="不修改請留空">
     </div>
     <div class="form-group">
       <label class="form-label">顯示名稱</label>
-      <input class="form-input" id="f-edit-displayname" value="${displayName}">
+      <input class="form-input" id="f-edit-displayname" value="${esc(displayName)}">
     </div>
     <div class="form-group">
       <label class="form-label">角色</label>
@@ -613,13 +631,13 @@ function showLCMSDiffModal(diff, lcmsCases) {
               ${diff.newCases.map((c, i) => `
                 <tr>
                   <td><input type="checkbox" class="lcms-new-chk" data-idx="${i}" checked></td>
-                  <td>${c.caseNo}</td>
-                  <td>${c.name}</td>
-                  <td>${c.idNumber}</td>
+                  <td>${esc(c.caseNo)}</td>
+                  <td>${esc(c.name)}</td>
+                  <td>${maskId(c.idNumber)}</td>
                   <td>${c.cmsLevel || '-'}</td>
-                  <td>${c.category || '-'}</td>
-                  <td>${c.district || '-'}</td>
-                  <td>${c.enrollDate || '-'}</td>
+                  <td>${esc(c.category || '-')}</td>
+                  <td>${esc(c.district || '-')}</td>
+                  <td>${esc(c.enrollDate || '-')}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -649,12 +667,12 @@ function showLCMSDiffModal(diff, lcmsCases) {
                 <tr>
                   ${j === 0 ? `
                     <td rowspan="${item.diffs.length}"><input type="checkbox" class="lcms-chg-chk" data-idx="${i}" checked></td>
-                    <td rowspan="${item.diffs.length}">${item.lcms.name}</td>
-                    <td rowspan="${item.diffs.length}">${item.lcms.idNumber}</td>
+                    <td rowspan="${item.diffs.length}">${esc(item.lcms.name)}</td>
+                    <td rowspan="${item.diffs.length}">${maskId(item.lcms.idNumber)}</td>
                   ` : ''}
-                  <td><span style="color:#e65100;font-weight:500;">${d.field}</span></td>
-                  <td style="color:#999;text-decoration:line-through;">${d.oldVal}</td>
-                  <td style="color:#2e7d32;font-weight:500;">${d.newVal}</td>
+                  <td><span style="color:#e65100;font-weight:500;">${esc(d.field)}</span></td>
+                  <td style="color:#999;text-decoration:line-through;">${esc(d.oldVal)}</td>
+                  <td style="color:#2e7d32;font-weight:500;">${esc(d.newVal)}</td>
                 </tr>
               `).join('')).join('')}
             </tbody>
@@ -683,11 +701,11 @@ function showLCMSDiffModal(diff, lcmsCases) {
               ${diff.possiblyClosed.map((c, i) => `
                 <tr>
                   <td><input type="checkbox" class="lcms-close-chk" data-idx="${i}"></td>
-                  <td>${c.name || '-'}</td>
-                  <td>${c.idNumber || '-'}</td>
+                  <td>${esc(c.name || '-')}</td>
+                  <td>${maskId(c.idNumber)}</td>
                   <td>${c.cmsLevel || '-'}</td>
-                  <td>${c.doctorName || '-'}</td>
-                  <td>${c.enrollDate || '-'}</td>
+                  <td>${esc(c.doctorName || '-')}</td>
+                  <td>${esc(c.enrollDate || '-')}</td>
                 </tr>
               `).join('')}
             </tbody>

@@ -5,12 +5,93 @@ const crypto = require('crypto');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const admin = require('firebase-admin');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
+const cors = require('cors');
+
 const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.xls', '.xlsx'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error('僅接受 .xls 或 .xlsx 檔案'));
+  }
+});
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
-app.use(express.static(path.join(__dirname)));
+// ===== 安全性中介軟體 =====
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://www.gstatic.com", "https://cdn.jsdelivr.net"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdn.jsdelivr.net"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdn.jsdelivr.net"],
+      connectSrc: ["'self'", "https://*.firebaseio.com", "https://*.googleapis.com", "https://firestore.googleapis.com"],
+      imgSrc: ["'self'", "data:"],
+      frameSrc: ["'none'"]
+    }
+  },
+  crossOriginEmbedderPolicy: false
+}));
+
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : true,
+  credentials: true
+}));
+
+// HTTPS 重導向（Railway 提供 TLS，透過 x-forwarded-proto 判斷）
+app.use((req, res, next) => {
+  if (req.headers['x-forwarded-proto'] === 'http') {
+    return res.redirect(301, 'https://' + req.headers.host + req.url);
+  }
+  next();
+});
+
+app.use(express.json({ limit: '1mb' }));
+
+// ===== 靜態檔案限制：只提供安全的檔案 =====
+const ALLOWED_EXTENSIONS = ['.html', '.css', '.js', '.png', '.jpg', '.ico', '.svg', '.woff', '.woff2', '.ttf'];
+const BLOCKED_FILES = ['serviceAccountKey.json', 'users.json', 'package.json', 'package-lock.json',
+  'firebase.json', '.firebaserc', 'firestore.rules', 'railway.toml', '.gitignore', 'cases-data.js'];
+
+app.use((req, res, next) => {
+  const reqPath = decodeURIComponent(req.path);
+  const filename = path.basename(reqPath);
+  if (BLOCKED_FILES.includes(filename)) {
+    return res.status(404).send('Not found');
+  }
+  if (reqPath.includes('..')) {
+    return res.status(400).send('Bad request');
+  }
+  next();
+});
+app.use(express.static(path.join(__dirname), {
+  dotfiles: 'deny',
+  index: false
+}));
+
+// ===== Rate Limiting =====
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: '登入嘗試次數過多，請 15 分鐘後再試' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 100,
+  message: { error: '請求過於頻繁，請稍後再試' }
+});
+
+app.use('/api/', apiLimiter);
 
 // ===== Firebase Admin 初始化 =====
 let firestoreDb = null;
@@ -19,18 +100,12 @@ function initFirebase() {
   try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
       const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-      });
+      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     } else if (fs.existsSync(path.join(__dirname, 'serviceAccountKey.json'))) {
       const serviceAccount = require('./serviceAccountKey.json');
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-      });
+      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     } else {
-      admin.initializeApp({
-        projectId: 'homecare-system-f37ea'
-      });
+      admin.initializeApp({ projectId: 'homecare-system-f37ea' });
     }
     firestoreDb = admin.firestore();
     console.log('Firebase Admin 初始化成功');
@@ -41,22 +116,73 @@ function initFirebase() {
 
 initFirebase();
 
+// ===== 稽核日誌 =====
+const AUDIT_COLLECTION = 'audit_logs';
+
+async function auditLog(action, userId, details = {}) {
+  const entry = {
+    action,
+    userId: userId || 'anonymous',
+    timestamp: new Date().toISOString(),
+    ip: details.ip || '',
+    details: details.msg || ''
+  };
+  console.log(`[AUDIT] ${entry.action} by ${entry.userId} - ${entry.details}`);
+  if (firestoreDb) {
+    try {
+      await firestoreDb.collection(AUDIT_COLLECTION).add(entry);
+    } catch (e) { /* 稽核寫入失敗不影響主流程 */ }
+  }
+}
+
 // ===== 使用者資料（Firestore 持久化）=====
 const USERS_COLLECTION = 'users';
 let _usersCache = null;
+const BCRYPT_ROUNDS = 10;
 
 function getDefaultUsers() {
   return [
     {
-      id: 'U001',
+      id: uuidv4(),
       username: '蕭輝哲',
-      password: hashPassword('蕭輝哲'),
+      password: bcrypt.hashSync('Hc@2025!Admin', BCRYPT_ROUNDS),
       displayName: '蕭輝哲',
       role: 'admin',
       status: 'active',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      mustChangePassword: true
     }
   ];
+}
+
+// 密碼複雜度驗證
+function validatePassword(pw) {
+  if (pw.length < 8) return '密碼長度至少 8 個字元';
+  if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return '密碼須包含英文字母和數字';
+  return null;
+}
+
+// 兼容舊 SHA-256 密碼的驗證函數
+function verifyPassword(inputPw, storedHash) {
+  // 新格式：bcrypt hash ($2a$ 或 $2b$ 開頭)
+  if (storedHash.startsWith('$2')) {
+    return bcrypt.compareSync(inputPw, storedHash);
+  }
+  // 舊格式：SHA-256 hex (64 字元)
+  if (storedHash.length === 64) {
+    const sha256 = crypto.createHash('sha256').update(inputPw).digest('hex');
+    return sha256 === storedHash;
+  }
+  return false;
+}
+
+// 遷移舊密碼為 bcrypt
+async function migratePasswordIfNeeded(user, inputPw) {
+  if (!user.password.startsWith('$2')) {
+    user.password = bcrypt.hashSync(inputPw, BCRYPT_ROUNDS);
+    const users = await loadUsers();
+    await saveUsers(users);
+  }
 }
 
 async function loadUsers() {
@@ -67,7 +193,6 @@ async function loadUsers() {
       const snapshot = await firestoreDb.collection(USERS_COLLECTION).get();
       if (!snapshot.empty) {
         _usersCache = snapshot.docs.map(doc => doc.data());
-        console.log(`從 Firestore 載入 ${_usersCache.length} 位使用者`);
         return _usersCache;
       }
     } catch (err) {
@@ -75,7 +200,6 @@ async function loadUsers() {
     }
   }
 
-  // Fallback: 本地檔案
   const localPath = path.join(__dirname, 'users.json');
   if (fs.existsSync(localPath)) {
     try {
@@ -92,27 +216,21 @@ async function loadUsers() {
 
 async function saveUsers(users) {
   _usersCache = users;
-
   if (firestoreDb) {
     try {
       const batch = firestoreDb.batch();
-      // 先刪除所有舊的
       const snapshot = await firestoreDb.collection(USERS_COLLECTION).get();
       snapshot.docs.forEach(doc => batch.delete(doc.ref));
-      // 寫入所有使用者
       users.forEach(user => {
         const ref = firestoreDb.collection(USERS_COLLECTION).doc(user.id);
         batch.set(ref, user);
       });
       await batch.commit();
-      console.log(`使用者資料已存到 Firestore (${users.length} 位)`);
       return;
     } catch (err) {
       console.error('Firestore 寫入使用者失敗:', err.message);
     }
   }
-
-  // Fallback: 本地檔案
   try {
     fs.writeFileSync(path.join(__dirname, 'users.json'), JSON.stringify(users, null, 2), 'utf8');
   } catch (e) {
@@ -120,12 +238,20 @@ async function saveUsers(users) {
   }
 }
 
-function hashPassword(pw) {
-  return crypto.createHash('sha256').update(pw).digest('hex');
-}
-
-// 簡易 session 管理
+// ===== Session 管理（含過期機制）=====
 const sessions = {};
+const SESSION_MAX_AGE = 8 * 60 * 60 * 1000; // 8 小時
+const SESSION_IDLE_TIMEOUT = 30 * 60 * 1000; // 30 分鐘閒置
+
+// 定期清理過期 session
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of Object.entries(sessions)) {
+    if (now - session.createdAt > SESSION_MAX_AGE || now - session.lastActivity > SESSION_IDLE_TIMEOUT) {
+      delete sessions[token];
+    }
+  }
+}, 5 * 60 * 1000);
 
 function createSession(user) {
   const token = crypto.randomBytes(32).toString('hex');
@@ -134,14 +260,27 @@ function createSession(user) {
     username: user.username,
     displayName: user.displayName,
     role: user.role,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    lastActivity: Date.now()
   };
   return token;
 }
 
 function getSession(req) {
   const token = req.headers['authorization']?.replace('Bearer ', '');
-  return token ? sessions[token] : null;
+  if (!token || !sessions[token]) return null;
+
+  const session = sessions[token];
+  const now = Date.now();
+
+  // 檢查 session 是否過期
+  if (now - session.createdAt > SESSION_MAX_AGE || now - session.lastActivity > SESSION_IDLE_TIMEOUT) {
+    delete sessions[token];
+    return null;
+  }
+
+  session.lastActivity = now;
+  return session;
 }
 
 function requireAuth(req, res, next) {
@@ -160,24 +299,23 @@ function requireAdmin(req, res, next) {
 
 // ===== API 路由 =====
 
-// 登入
-app.post('/api/login', async (req, res) => {
+// 登入（含 rate limit）
+app.post('/api/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: '請輸入帳號和密碼' });
 
   const users = await loadUsers();
-  console.log(`登入嘗試: "${username}", 使用者數: ${users.length}, 帳號列表: ${users.map(u=>u.username).join(',')}`);
   const user = users.find(u => u.username === username && u.status === 'active');
-  if (!user) {
-    console.log(`找不到使用者: "${username}"`);
-    return res.status(401).json({ error: '帳號或密碼錯誤' });
-  }
-  if (user.password !== hashPassword(password)) {
-    console.log(`密碼不符: stored=${user.password.substring(0,8)}..., input=${hashPassword(password).substring(0,8)}...`);
+  if (!user || !verifyPassword(password, user.password)) {
+    await auditLog('LOGIN_FAILED', username, { ip: req.ip, msg: '帳號或密碼錯誤' });
     return res.status(401).json({ error: '帳號或密碼錯誤' });
   }
 
+  // 自動遷移舊 SHA-256 密碼為 bcrypt
+  await migratePasswordIfNeeded(user, password);
+
   const token = createSession(user);
+  await auditLog('LOGIN_SUCCESS', user.id, { ip: req.ip, msg: user.username });
   res.json({
     token,
     user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role }
@@ -187,7 +325,10 @@ app.post('/api/login', async (req, res) => {
 // 登出
 app.post('/api/logout', (req, res) => {
   const token = req.headers['authorization']?.replace('Bearer ', '');
-  if (token) delete sessions[token];
+  if (token && sessions[token]) {
+    auditLog('LOGOUT', sessions[token].userId, { ip: req.ip });
+    delete sessions[token];
+  }
   res.json({ ok: true });
 });
 
@@ -198,7 +339,6 @@ app.get('/api/me', requireAuth, (req, res) => {
 
 // ===== 使用者管理 (管理員) =====
 
-// 列出所有使用者
 app.get('/api/users', requireAdmin, async (req, res) => {
   const users = (await loadUsers()).map(u => ({
     id: u.id, username: u.username, displayName: u.displayName,
@@ -207,10 +347,12 @@ app.get('/api/users', requireAdmin, async (req, res) => {
   res.json(users);
 });
 
-// 新增使用者
 app.post('/api/users', requireAdmin, async (req, res) => {
   const { username, password, displayName, role } = req.body;
   if (!username || !password) return res.status(400).json({ error: '帳號和密碼為必填' });
+
+  const pwErr = validatePassword(password);
+  if (pwErr) return res.status(400).json({ error: pwErr });
 
   const users = await loadUsers();
   if (users.find(u => u.username === username)) {
@@ -218,9 +360,9 @@ app.post('/api/users', requireAdmin, async (req, res) => {
   }
 
   const newUser = {
-    id: 'U' + String(users.length + 1).padStart(3, '0'),
+    id: uuidv4(),
     username,
-    password: hashPassword(password),
+    password: bcrypt.hashSync(password, BCRYPT_ROUNDS),
     displayName: displayName || username,
     role: role || 'user',
     status: 'active',
@@ -228,10 +370,10 @@ app.post('/api/users', requireAdmin, async (req, res) => {
   };
   users.push(newUser);
   await saveUsers(users);
+  await auditLog('USER_CREATED', req.session.userId, { ip: req.ip, msg: `新增使用者: ${username}` });
   res.json({ id: newUser.id, username: newUser.username, displayName: newUser.displayName, role: newUser.role });
 });
 
-// 修改使用者
 app.put('/api/users/:id', requireAdmin, async (req, res) => {
   const users = await loadUsers();
   const user = users.find(u => u.id === req.params.id);
@@ -239,40 +381,49 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
 
   const { username, password, displayName, role, status } = req.body;
   if (username) user.username = username;
-  if (password) user.password = hashPassword(password);
+  if (password) {
+    const pwErr = validatePassword(password);
+    if (pwErr) return res.status(400).json({ error: pwErr });
+    user.password = bcrypt.hashSync(password, BCRYPT_ROUNDS);
+  }
   if (displayName) user.displayName = displayName;
   if (role) user.role = role;
   if (status) user.status = status;
 
   await saveUsers(users);
+  await auditLog('USER_UPDATED', req.session.userId, { ip: req.ip, msg: `修改使用者: ${user.username}` });
   res.json({ id: user.id, username: user.username, displayName: user.displayName, role: user.role, status: user.status });
 });
 
-// 刪除使用者
 app.delete('/api/users/:id', requireAdmin, async (req, res) => {
   let users = await loadUsers();
   const idx = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: '使用者不存在' });
   if (users[idx].username === '蕭輝哲') return res.status(400).json({ error: '不能刪除系統管理員' });
 
+  const deletedName = users[idx].username;
   users.splice(idx, 1);
   await saveUsers(users);
+  await auditLog('USER_DELETED', req.session.userId, { ip: req.ip, msg: `刪除使用者: ${deletedName}` });
   res.json({ ok: true });
 });
 
-// 修改密碼（自己改自己的）
 app.put('/api/change-password', requireAuth, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   if (!oldPassword || !newPassword) return res.status(400).json({ error: '請輸入舊密碼和新密碼' });
 
+  const pwErr = validatePassword(newPassword);
+  if (pwErr) return res.status(400).json({ error: pwErr });
+
   const users = await loadUsers();
   const user = users.find(u => u.id === req.session.userId);
-  if (!user || user.password !== hashPassword(oldPassword)) {
+  if (!user || !verifyPassword(oldPassword, user.password)) {
     return res.status(400).json({ error: '舊密碼錯誤' });
   }
 
-  user.password = hashPassword(newPassword);
+  user.password = bcrypt.hashSync(newPassword, BCRYPT_ROUNDS);
   await saveUsers(users);
+  await auditLog('PASSWORD_CHANGED', req.session.userId, { ip: req.ip });
   res.json({ ok: true });
 });
 
@@ -292,26 +443,21 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
       return res.status(400).json({ error: '檔案中無資料' });
     }
 
-    // Map LCMS columns to system fields
     const lcmsCases = rows.map(row => {
-      // Extract CMS level number from "6級" format
       const cmsRaw = String(row['CMS'] || '');
       const cmsMatch = cmsRaw.match(/(\d+)/);
       const cmsLevel = cmsMatch ? parseInt(cmsMatch[1]) : null;
 
-      // Extract age number from "74歲" format
       const ageRaw = String(row['年齡'] || '');
       const ageMatch = ageRaw.match(/(\d+)/);
       const age = ageMatch ? parseInt(ageMatch[1]) : null;
 
-      // Map welfare category
       const welfareRaw = String(row['福利身分'] || '');
       let category = '';
       if (welfareRaw.includes('第一類')) category = '第一類';
       else if (welfareRaw.includes('第二類')) category = '第二類';
       else if (welfareRaw.includes('第三類')) category = '第三類';
 
-      // Convert ROC date to AD date
       function rocToAD(rocDate) {
         if (!rocDate) return '';
         const str = String(rocDate).trim();
@@ -323,7 +469,6 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
         return `${year}-${month}-${day}`;
       }
 
-      // Case status mapping
       const statusRaw = String(row['案件狀態'] || '');
       let status = 'active';
       if (statusRaw.includes('結案') || statusRaw.includes('終止')) {
@@ -355,7 +500,9 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
         homeVisitDates: String(row['家訪日期'] || '').trim(),
         status: status
       };
-    }).filter(c => c.idNumber); // Filter out rows without ID number
+    }).filter(c => c.idNumber);
+
+    auditLog('LCMS_SYNC', req.session.userId, { ip: req.ip, msg: `同步 ${lcmsCases.length} 筆個案` });
 
     res.json({
       total: lcmsCases.length,
@@ -364,7 +511,7 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
     });
   } catch (err) {
     console.error('LCMS 解析失敗:', err);
-    res.status(500).json({ error: 'LCMS 檔案解析失敗: ' + err.message });
+    res.status(500).json({ error: 'LCMS 檔案解析失敗，請確認檔案格式正確' });
   }
 });
 
