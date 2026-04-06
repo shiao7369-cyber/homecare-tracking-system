@@ -1955,7 +1955,16 @@ function computeSmartDiff(lcmsCases) {
         diffs.push({ field: '申報紀錄數量(年度)', oldVal: sc.lcmsBillingCount || 0, newVal: lc.lcmsBillingCount });
       if (lc.homeVisitDates && lc.homeVisitDates !== (sc.homeVisitDates || ''))
         diffs.push({ field: '家訪日期', oldVal: sc.homeVisitDates || '(空)', newVal: lc.homeVisitDates });
-      // LCMS 檔案中標記結案的個案
+      // 本地清冊格式的欄位
+      if (lc.doctorName && lc.doctorName !== (sc.doctorName || ''))
+        diffs.push({ field: '主責醫師', oldVal: sc.doctorName || '(空)', newVal: lc.doctorName });
+      if (lc.address && lc.address !== (sc.address || ''))
+        diffs.push({ field: '地址', oldVal: sc.address || '(空)', newVal: lc.address });
+      if (lc.phone && lc.phone !== (sc.phone || ''))
+        diffs.push({ field: '電話', oldVal: sc.phone || '(空)', newVal: lc.phone });
+      if (lc.gender && lc.gender !== (sc.gender || ''))
+        diffs.push({ field: '性別', oldVal: sc.gender || '(空)', newVal: lc.gender });
+      // 檔案中標記結案的個案
       if (lc.status === 'closed' && sc.status === 'active')
         diffs.push({ field: '狀態', oldVal: '收案中', newVal: '結案' });
       if (diffs.length > 0) {
@@ -2117,14 +2126,15 @@ async function applySmartDiff() {
     db.cases.push({
       id: 'C' + String(maxId + 1 + addedCount).padStart(3, '0'),
       caseNo: lc.caseNo || '', name: lc.name, idNumber: lc.idNumber,
-      gender: '', cmsLevel: lc.cmsLevel, category: lc.category || '',
-      district: lc.district || '', village: lc.village || '', address: '',
+      gender: lc.gender || '', cmsLevel: lc.cmsLevel, category: lc.category || '',
+      district: lc.district || '', village: lc.village || '', address: lc.address || '',
       status: lc.status === 'closed' ? 'closed' : 'active',
-      doctorName: '', enrollDate: lc.enrollDate || '', age: lc.age,
+      doctorName: lc.doctorName || '', enrollDate: lc.enrollDate || '', age: lc.age,
       careManager: lc.careManager || '', unitName: lc.unitName || '',
       lcmsOpinionCount: lc.lcmsOpinionCount || 0, lcmsBillingCount: lc.lcmsBillingCount || 0,
       homeVisitDates: lc.homeVisitDates || '',
-      phone: '', diagnosis: '', notes: '',
+      phone: lc.phone || '', contactPerson: lc.contactPerson || '',
+      diagnosis: '', notes: '',
       opinionDate: '', opinionExpiry: '',
       acpStatus: 'not_started', adStatus: 'not_started',
       acpExplainDate: '', adExplainDate: '', acpSignDate: '',
@@ -2153,6 +2163,10 @@ async function applySmartDiff() {
         case '意見書數量(年度)': sc.lcmsOpinionCount = item.lcms.lcmsOpinionCount; break;
         case '申報紀錄數量(年度)': sc.lcmsBillingCount = item.lcms.lcmsBillingCount; break;
         case '家訪日期': sc.homeVisitDates = item.lcms.homeVisitDates; break;
+        case '主責醫師': sc.doctorName = item.lcms.doctorName; break;
+        case '地址': sc.address = item.lcms.address; break;
+        case '電話': sc.phone = item.lcms.phone; break;
+        case '性別': sc.gender = item.lcms.gender; break;
         case '狀態': sc.status = 'closed'; break;
       }
     });
