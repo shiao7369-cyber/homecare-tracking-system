@@ -303,7 +303,7 @@ function populateDoctorSelects() {
     const el = document.getElementById(id);
     if (!el) return;
     const firstOpt = el.options[0].outerHTML;
-    el.innerHTML = firstOpt + docs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    el.innerHTML = firstOpt + docs.map(d => `<option value="${d.name}">${esc(d.name)}</option>`).join('');
   });
   const nurses = getNurses(db).filter(n => n.status === 'active');
   const nurseEl = document.getElementById('case-filter-nurse');
@@ -329,8 +329,10 @@ function renderCases() {
     if (status && c.status !== status) return false;
     if (level && c.cmsLevel !== parseInt(level)) return false;
     if (doctor) {
-      const docMember = findMember(db, doctor);
-      if (c.doctorId !== doctor && !(docMember && c.doctorName === docMember.name)) return false;
+      const docMember = db.members.find(m => m.name === doctor);
+      const matchById = docMember && c.doctorId === docMember.id;
+      const matchByName = c.doctorName === doctor;
+      if (!matchById && !matchByName) return false;
     }
     if (category && c.category !== category) return false;
     if (nurseFilter && c.nurseId !== nurseFilter) return false;
@@ -1338,8 +1340,12 @@ function generateBilling() {
 // ==========================================
 //  KPI 績效
 // ==========================================
-function computeKPI(doctorId) {
-  const active = getActiveCases(db).filter(c => !doctorId || c.doctorId === doctorId);
+function computeKPI(doctorFilter) {
+  const active = getActiveCases(db).filter(c => {
+    if (!doctorFilter) return true;
+    const docMember = db.members.find(m => m.name === doctorFilter);
+    return (docMember && c.doctorId === docMember.id) || c.doctorName === doctorFilter;
+  });
   const now = new Date();
   const yy = String(now.getFullYear());
 
@@ -1376,7 +1382,7 @@ function computeKPI(doctorId) {
   const lipidRate = lipidCases.length ? (lipidMonitored.length / lipidCases.length * 100) : 100;
 
   // ACP 訓練
-  const relevantMembers = db.members.filter(m => m.status === 'active' && (!doctorId || m.id === doctorId));
+  const relevantMembers = db.members.filter(m => m.status === 'active' && (!doctorFilter || m.name === doctorFilter));
   const acpTrained = relevantMembers.filter(m => m.acpTrained);
   const acpTrainRate = relevantMembers.length ? (acpTrained.length / relevantMembers.length * 100) : 0;
 
@@ -1397,8 +1403,8 @@ function computeKPI(doctorId) {
 }
 
 function renderKPI() {
-  const doctorId = document.getElementById('kpi-filter-doctor')?.value || '';
-  const kpiData = computeKPI(doctorId);
+  const doctorFilter = document.getElementById('kpi-filter-doctor')?.value || '';
+  const kpiData = computeKPI(doctorFilter);
 
   document.getElementById('kpi-detail-grid').innerHTML = kpiData.map(k => {
     const pct = Math.min(100, k.value);
