@@ -1889,33 +1889,134 @@ function processUploadFile(file) {
 }
 
 async function uploadLCMSFile(file) {
-  if (!authToken) {
-    showToast('請先登入再匯入檔案', 'danger');
-    return;
-  }
-  const formData = new FormData();
-  formData.append('file', file);
+  showToast('正在解析檔案...');
   try {
-    showToast('正在解析檔案...');
-    const res = await fetch('/api/lcms-sync', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + authToken },
-      body: formData
-    });
-    const data = await res.json();
-    if (res.status === 401) {
-      showToast('登入已過期，請重新登入', 'danger');
-      doLogout();
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: 'array' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    const headerRow = (aoa[0] || []).map(h => String(h).replace(/[\r\n\s]/g, ''));
+
+    const hasLCMS = headerRow.includes('身分證號') && headerRow.includes('案號');
+    const hasLocal = headerRow.some(h => h.includes('身份證字號')) || headerRow.includes('照管案號');
+
+    function rocToAD(rocDate) {
+      if (!rocDate) return '';
+      const str = String(rocDate).trim();
+      const m = str.match(/^(\d{2,3})\/(\d{1,2})\/(\d{1,2})$/);
+      if (!m) return '';
+      const year = parseInt(m[1]) + 1911;
+      return `${year}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+    }
+    function excelDateToISO(serial) {
+      if (!serial || typeof serial !== 'number') return '';
+      const d = new Date((serial - 25569) * 86400000);
+      return d.toISOString().slice(0, 10);
+    }
+
+    let lcmsCases = [];
+
+    if (hasLCMS) {
+      // LCMS 長照平台匯出格式
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      lcmsCases = rows.map(row => {
+        const cmsMatch = String(row['CMS'] || '').match(/(\d+)/);
+        const ageMatch = String(row['年齡'] || '').match(/(\d+)/);
+        const welfareRaw = String(row['福利身分'] || '');
+        let category = '';
+        if (welfareRaw.includes('第一類')) category = '第一類';
+        else if (welfareRaw.includes('第二類')) category = '第二類';
+        else if (welfareRaw.includes('第三類')) category = '第三類';
+        const statusRaw = String(row['案件狀態'] || '');
+        let status = (statusRaw.includes('結案') || statusRaw.includes('終止')) ? 'closed' : 'active';
+        return {
+          caseNo: String(row['案號'] || '').trim(),
+          name: String(row['姓名'] || '').trim(),
+          idNumber: String(row['身分證號'] || '').trim().toUpperCase(),
+          birthday: rocToAD(row['出生日期']),
+          age: ageMatch ? parseInt(ageMatch[1]) : null,
+          cmsLevel: cmsMatch ? parseInt(cmsMatch[1]) : null,
+          category, district: String(row['居住地(行政區)'] || '').trim(),
+          village: String(row['居住地(村里)'] || '').trim(),
+          careManager: String(row['照管專員'] || '').trim(),
+          unitName: String(row['A單位名稱'] || '').trim(),
+          lcmsOpinionCount: parseInt(row['意見書數量(當年度)']) || 0,
+          lcmsBillingCount: parseInt(row['申報紀錄數量(當年度)']) || 0,
+          hospital: String(row['主責居家醫師院所'] || '').trim(),
+          enrollDate: rocToAD(row['派案日期']),
+          homeVisitDates: String(row['家訪日期'] || '').trim(),
+          status
+        };
+      }).filter(c => c.idNumber);
+
+    } else if (hasLocal) {
+      // 本地個案清冊格式（雙行 header）
+      for (let i = 2; i < aoa.length; i++) {
+        const r = aoa[i];
+        const name = String(r[3] || '').trim();
+        const idNumber = String(r[4] || '').trim().toUpperCase();
+        if (!name || !idNumber || idNumber.length < 8) continue;
+        const cmsMatch = String(r[7] || '').match(/(\d+)/);
+        const catRaw = String(r[6] || '').trim();
+        let category = '';
+        if (catRaw.includes('第一類') || catRaw.includes('一般戶')) category = '第一類';
+        else if (catRaw.includes('第二類') || catRaw.includes('中低')) category = '第二類';
+        else if (catRaw.includes('第三類') || catRaw.includes('低收')) category = '第三類';
+        else category = catRaw;
+        let enrollDate = typeof r[12] === 'number' ? excelDateToISO(r[12]) : rocToAD(r[12]);
+        const addr = String(r[8] || '').trim();
+        const distMatch = addr.match(/([\u4e00-\u9fff]+[區鄉鎮市])/);
+        lcmsCases.push({
+          caseNo: String(r[1] || '').trim(), name, idNumber,
+          gender: String(r[5] || '').trim(),
+          cmsLevel: cmsMatch ? parseInt(cmsMatch[1]) : null,
+          category, address: addr, district: distMatch ? distMatch[1] : '',
+          village: String(r[9] || '').trim(),
+          contactPerson: String(r[10] || '').replace(/[\r\n]/g, ' ').trim(),
+          phone: String(r[11] || '').replace(/[\r\n]/g, ' ').trim(),
+          doctorName: String(r[13] || '').trim(),
+          enrollDate, status: 'active'
+        });
+      }
+      // 讀取結案總表
+      if (workbook.SheetNames.includes('結案總表')) {
+        const cs = workbook.Sheets['結案總表'];
+        const ca = XLSX.utils.sheet_to_json(cs, { header: 1, defval: '' });
+        for (let i = 2; i < ca.length; i++) {
+          const r = ca[i];
+          const name = String(r[3] || '').trim();
+          const idNumber = String(r[4] || '').trim().toUpperCase();
+          if (!name || !idNumber || idNumber.length < 8) continue;
+          const existing = lcmsCases.find(c => c.idNumber === idNumber);
+          if (existing) { existing.status = 'closed'; }
+          else {
+            const cmsMatch = String(r[7] || '').match(/(\d+)/);
+            lcmsCases.push({
+              caseNo: String(r[1] || '').trim(), name, idNumber,
+              gender: String(r[5] || '').trim(),
+              cmsLevel: cmsMatch ? parseInt(cmsMatch[1]) : null,
+              category: String(r[6] || '').trim(),
+              address: String(r[8] || '').trim(),
+              village: String(r[9] || '').trim(),
+              doctorName: String(r[13] || '').trim(),
+              status: 'closed'
+            });
+          }
+        }
+      }
+    } else {
+      showToast('無法辨識檔案格式，請使用 LCMS 或本地個案清冊', 'danger');
       return;
     }
-    if (!res.ok) throw new Error(data.error || '上傳失敗');
 
-    console.log('[Upload] format:', data.format, 'cases:', data.total);
-    const lcmsCases = data.cases;
+    console.log('[Upload] format:', hasLCMS ? 'LCMS' : 'LOCAL', 'cases:', lcmsCases.length);
+    showToast(`解析完成：${lcmsCases.length} 筆個案`);
     const diff = computeSmartDiff(lcmsCases);
     showSmartDiffModal(diff, lcmsCases);
   } catch (err) {
-    showToast('檔案處理失敗: ' + err.message, 'danger');
+    console.error('Excel 解析失敗:', err);
+    showToast('檔案解析失敗: ' + err.message, 'danger');
   }
 }
 
