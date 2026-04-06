@@ -109,7 +109,7 @@
   <!-- ====== Dashboard ====== -->
   <section id="page-dashboard" class="page active">
     <div class="stats-grid">
-      <div class="stat-card stat-primary">
+      <div class="stat-card stat-primary" style="cursor:pointer" onclick="switchPage('cases')">
         <div class="stat-icon">👥</div>
         <div class="stat-body">
           <div class="stat-value" id="stat-total-cases">0</div>
@@ -117,7 +117,7 @@
         </div>
         <div class="stat-trend up" id="trend-cases">+0 本月</div>
       </div>
-      <div class="stat-card stat-success">
+      <div class="stat-card stat-success" style="cursor:pointer" onclick="switchPage('members')">
         <div class="stat-icon">👨‍⚕️</div>
         <div class="stat-body">
           <div class="stat-value" id="stat-total-doctors">0</div>
@@ -125,7 +125,7 @@
         </div>
         <div class="stat-trend" id="trend-doctors">平均 0 案/醫師</div>
       </div>
-      <div class="stat-card stat-warning">
+      <div class="stat-card stat-warning" style="cursor:pointer" onclick="switchPage('opinion')">
         <div class="stat-icon">📄</div>
         <div class="stat-body">
           <div class="stat-value" id="stat-opinion-due">0</div>
@@ -133,7 +133,7 @@
         </div>
         <div class="stat-trend warn" id="trend-opinion">30天內到期</div>
       </div>
-      <div class="stat-card stat-danger">
+      <div class="stat-card stat-danger" style="cursor:pointer" onclick="switchPage('alerts')">
         <div class="stat-icon">⚠️</div>
         <div class="stat-body">
           <div class="stat-value" id="stat-alerts">0</div>
