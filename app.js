@@ -209,18 +209,23 @@ function renderDashboard() {
   document.getElementById('stat-total-doctors').textContent = docs.length;
   document.getElementById('trend-doctors').textContent = `平均 ${docs.length ? Math.round(active.length/docs.length) : 0} 案/醫師`;
 
-  // 意見書待更新（細分）
+  // 意見書狀態（基於醫師家訪日期，6個月有效期）
   let opExpired = 0, opExpiring = 0, opNone = 0;
+  const todayStr = fmt(new Date());
   active.forEach(c => {
+    const lastVisit = c.doctorVisitDate || '';
     const op = getLatestOpinion(db, c.id);
-    if (!op) opNone++;
-    else if (op.status === 'expired') opExpired++;
-    else if (op.status === 'expiring') opExpiring++;
+    // 優先用 doctorVisitDate，其次用意見書記錄
+    const lastDate = lastVisit || (op ? op.issueDate : '');
+    if (!lastDate) { opNone++; return; }
+    const daysSince = daysBetween(lastDate, todayStr);
+    if (daysSince > 180) opExpired++;        // 超過6個月 → 逾期
+    else if (daysSince >= 150) opExpiring++;  // 5~6個月 → 待更新
   });
   const opDue = opExpired + opExpiring + opNone;
   document.getElementById('stat-opinion-due').textContent = opDue;
   const opDetailEl = document.getElementById('trend-opinion');
-  if (opDetailEl) opDetailEl.innerHTML = opExpired ? `<span style="color:var(--danger)">${opExpired}過期</span> ${opExpiring}即期 ${opNone}未開` : `${opExpiring}即期 ${opNone}未開`;
+  if (opDetailEl) opDetailEl.innerHTML = opExpired ? `<span style="color:var(--danger)">${opExpired}逾期</span> ${opExpiring}待更新 ${opNone}未開` : `${opExpiring}待更新 ${opNone}未開`;
 
   // 警示
   const alerts = generateAlerts();
@@ -335,7 +340,17 @@ function renderCases() {
     const nurse = findMember(db, c.nurseId);
     const op = getLatestOpinion(db, c.id);
     const svcThisMonth = getServiceThisMonth(db, c.id);
-    const opBadge = op ? opinionStatusBadge(op.status) : '<span class="badge badge-gray">待開立</span>';
+    // 意見書狀態基於醫師家訪日期
+    const _lastVD = c.doctorVisitDate || (op ? op.issueDate : '');
+    let opBadge;
+    if (!_lastVD) {
+      opBadge = '<span class="badge badge-gray">待開立</span>';
+    } else {
+      const _ds = daysBetween(_lastVD, fmt(new Date()));
+      if (_ds > 180) opBadge = '<span class="badge badge-danger">逾期</span>';
+      else if (_ds >= 150) opBadge = '<span class="badge badge-warning">待更新</span>';
+      else opBadge = '<span class="badge badge-success">有效</span>';
+    }
     const statusBadge = c.status === 'active'
       ? '<span class="badge badge-success">收案中</span>'
       : '<span class="badge badge-gray">已結案</span>';
@@ -589,7 +604,14 @@ function viewCase(caseId) {
           <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師</td><td>${nurse ? esc(nurse.name) : '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">醫師家訪日</td><td>${c.doctorVisitDate || '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師家訪日</td><td>${c.nurseVisitDate || '-'}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">意見書</td><td>${op ? opinionStatusBadge(op.status) + ' ' + op.issueDate : '尚未開立'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">意見書</td><td>${(() => {
+            const vd = c.doctorVisitDate || (op ? op.issueDate : '');
+            if (!vd) return '尚未開立';
+            const ds = daysBetween(vd, fmt(new Date()));
+            const expD = new Date(vd); expD.setMonth(expD.getMonth() + 6);
+            const badge = ds > 180 ? '<span class="badge badge-danger">逾期</span>' : ds >= 150 ? '<span class="badge badge-warning">待更新</span>' : '<span class="badge badge-success">有效</span>';
+            return badge + ' 家訪 ' + vd + '（到期 ' + expD.toISOString().slice(0,10) + '）';
+          })()}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">預約家訪</td><td>${esc(c.scheduledVisit || '-')}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">備註</td><td>${esc(c.notes || '-')}</td></tr>
           ${c.status === 'closed' ? `<tr><td style="padding:2px 8px;color:var(--gray-500)">結案資訊</td><td style="color:#dc2626">${esc(c.closeInfo || c.closeReason || '-')}</td></tr>` : ''}
@@ -1520,37 +1542,37 @@ function generateAlerts() {
       });
     }
 
-    // 意見書過期或即將到期
+    // 意見書狀態（基於醫師家訪日期，6個月有效期）
     const op = getLatestOpinion(db, c.id);
-    if (!op) {
-      const enrollDays = daysBetween(c.enrollDate, fmt(now));
-      if (enrollDays > 14) {
+    const lastVisitDate = c.doctorVisitDate || (op ? op.issueDate : '');
+    if (!lastVisitDate) {
+      // 從未開立意見書
+      alerts.push({
+        level: 'danger', title: `${esc(c.name)} 意見書未開立`,
+        desc: `收案日 ${c.enrollDate}，尚無醫師家訪紀錄`,
+        page: 'opinion', caseId: c.id,
+      });
+    } else {
+      const daysSince = daysBetween(lastVisitDate, fmt(now));
+      const expiryDate = new Date(lastVisitDate);
+      expiryDate.setMonth(expiryDate.getMonth() + 6);
+      const expiryStr = expiryDate.toISOString().slice(0, 10);
+      if (daysSince > 180) {
+        // 超過6個月 → 逾期
         alerts.push({
-          level: 'danger', title: `${esc(c.name)} 意見書逾期未開立`,
-          desc: `收案日 ${c.enrollDate}，已超過14天`,
+          level: 'danger', title: `${esc(c.name)} 意見書已逾期`,
+          desc: `上次醫師家訪 ${lastVisitDate}，已逾期 ${daysSince - 180} 天，到期日 ${expiryStr}`,
           page: 'opinion', caseId: c.id,
         });
-      } else {
+      } else if (daysSince >= 150) {
+        // 5~6個月 → 待更新（到期前1個月內）
+        const daysLeft = 180 - daysSince;
         alerts.push({
-          level: 'warning', title: `${esc(c.name)} 意見書待開立`,
-          desc: `收案日 ${c.enrollDate}，剩餘 ${14 - enrollDays} 天`,
+          level: 'warning', title: `${esc(c.name)} 意見書即將到期`,
+          desc: `上次醫師家訪 ${lastVisitDate}，剩餘 ${daysLeft} 天到期，請安排醫師家訪更新`,
           page: 'opinion', caseId: c.id,
         });
       }
-    } else if (op.status === 'expired') {
-      const nurseName2 = c.nurseId ? (findMember(db, c.nurseId)?.name || '') : '';
-      alerts.push({
-        level: 'danger', title: `${esc(c.name)} 意見書已過期`,
-        desc: `到期日 ${op.expiryDate}${nurseName2 ? '，個管師: ' + esc(nurseName2) + '，請安排醫師家訪更新' : '，請盡速更新'}`,
-        page: 'opinion', caseId: c.id,
-      });
-    } else if (op.status === 'expiring') {
-      const nurseName3 = c.nurseId ? (findMember(db, c.nurseId)?.name || '') : '';
-      alerts.push({
-        level: 'warning', title: `${esc(c.name)} 意見書即將到期`,
-        desc: `到期日 ${op.expiryDate}${nurseName3 ? '，個管師: ' + esc(nurseName3) + '，請安排醫師家訪更新' : ''}`,
-        page: 'opinion', caseId: c.id,
-      });
     }
 
     // 4個月未家訪
