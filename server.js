@@ -512,10 +512,14 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
       return res.status(400).json({ error: '請上傳 .xls 檔案' });
     }
 
+    console.log('[LCMS] file received:', req.file.originalname, 'size:', req.file.size, 'mimetype:', req.file.mimetype);
+
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
+    console.log('[LCMS] sheet:', sheetName, 'ref:', sheet['!ref']);
     const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    console.log('[LCMS] parsed rows:', rows.length, 'columns:', Object.keys(rows[0] || {}));
 
     if (rows.length === 0) {
       return res.status(400).json({ error: '檔案中無資料' });
@@ -579,6 +583,12 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
         status: status
       };
     }).filter(c => c.idNumber);
+
+    console.log('[LCMS] before filter total:', rows.length, 'after filter:', lcmsCases.length);
+    if (lcmsCases.length === 0 && rows.length > 0) {
+      console.log('[LCMS] first row keys:', Object.keys(rows[0]));
+      console.log('[LCMS] first row 身分證號:', JSON.stringify(rows[0]['身分證號']));
+    }
 
     auditLog('LCMS_SYNC', req.session?.userId, { ip: req.ip, msg: `同步 ${lcmsCases.length} 筆個案` });
 
