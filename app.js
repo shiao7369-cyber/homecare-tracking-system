@@ -369,7 +369,7 @@ function renderCases() {
     }
 
     return `<tr class="${c.status === 'active' && !trackingText ? 'row-warning' : ''}">
-      <td><small>${c.id}</small></td>
+      <td><small>${c.caseNo || c.id}</small></td>
       <td><strong>${esc(c.name)}</strong></td>
       <td><small>${esc(c.category || '-')}</small></td>
       <td><span class="badge badge-primary">${c.cmsLevel || '-'}</span></td>
@@ -397,7 +397,7 @@ function openCaseModal(caseId) {
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">照管案號 *</label>
-        <input class="form-input" id="f-case-no" value="${c ? c.id : ''}" style="width:100%" ${c ? 'readonly' : ''}>
+        <input class="form-input" id="f-case-no" value="${c ? (c.caseNo || c.id) : ''}" style="width:100%" ${c ? 'readonly' : ''}>
       </div>
       <div class="form-group">
         <label class="form-label">姓名 *</label>
@@ -568,7 +568,7 @@ function viewCase(caseId) {
       <div>
         <h4 style="margin-bottom:.5rem;color:var(--gray-600)">基本資料</h4>
         <table style="font-size:.85rem;width:100%">
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">照管案號</td><td><strong>${c.id}</strong></td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">照管案號</td><td><strong>${c.caseNo || c.id}</strong></td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">姓名</td><td><strong>${esc(c.name)}</strong></td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">身分證</td><td>${maskId(c.idNumber)}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">性別</td><td>${c.gender==='M'?'男':'女'}</td></tr>
@@ -850,7 +850,7 @@ function openServiceModal() {
       <div class="form-group">
         <label class="form-label">個案 *</label>
         <select class="form-select" id="f-svc-case" style="width:100%">
-          ${activeCases.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.id)})</option>`).join('')}
+          ${activeCases.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.caseNo || c.id)})</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -1103,7 +1103,7 @@ function openOpinionModal() {
       <div class="form-group">
         <label class="form-label">個案 *</label>
         <select class="form-select" id="f-op-case" style="width:100%">
-          ${activeCases.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.id)})</option>`).join('')}
+          ${activeCases.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.caseNo || c.id)})</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -1455,7 +1455,7 @@ function updateACP(caseId) {
   const c = findCase(db, caseId);
   if (!c) return;
   const body = `
-    <p style="margin-bottom:1rem;font-weight:600">個案：${esc(c.name)} (${esc(c.id)})</p>
+    <p style="margin-bottom:1rem;font-weight:600">個案：${esc(c.name)} (${esc(c.caseNo || c.id)})</p>
     <div class="form-group"><label class="form-checkbox"><input type="checkbox" id="f-acp-explained" ${c.acpExplained?'checked':''}> 已完成 ACP 說明</label></div>
     <div class="form-group"><label class="form-checkbox"><input type="checkbox" id="f-ad-explained" ${c.adExplained?'checked':''}> 已完成 AD 說明</label></div>
     <div class="form-group"><label class="form-checkbox"><input type="checkbox" id="f-acp-signed" ${c.acpSigned?'checked':''}> 已簽署 ACP</label></div>
