@@ -4,7 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const XLSX = require('xlsx');
-const Database = require('better-sqlite3');
+const { Pool } = require('pg');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
@@ -58,7 +58,7 @@ app.use(express.json({ limit: '10mb' }));
 // ===== 靜態檔案限制：只提供安全的檔案 =====
 const ALLOWED_EXTENSIONS = ['.html', '.css', '.js', '.png', '.jpg', '.ico', '.svg', '.woff', '.woff2', '.ttf'];
 const BLOCKED_FILES = ['serviceAccountKey.json', 'users.json', 'package.json', 'package-lock.json',
-  'firebase.json', '.firebaserc', 'firestore.rules', 'railway.toml', '.gitignore', 'homecare.db'];
+  'firebase.json', '.firebaserc', 'firestore.rules', 'railway.toml', '.gitignore'];
 
 app.use((req, res, next) => {
   const reqPath = decodeURIComponent(req.path);
@@ -93,118 +93,108 @@ const apiLimiter = rateLimit({
 
 app.use('/api/', apiLimiter);
 
-// ===== SQLite 初始化 =====
-const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, 'homecare.db');
-const db = new Database(DB_PATH);
+// ===== PostgreSQL 初始化 =====
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('railway') ? { rejectUnauthorized: false } : false
+});
 
-// 啟用 WAL 模式提升效能
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+async function initDatabase() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        "displayName" TEXT,
+        role TEXT DEFAULT 'user',
+        status TEXT DEFAULT 'active',
+        "createdAt" TEXT,
+        "mustChangePassword" BOOLEAN DEFAULT false
+      );
 
-// 建立資料表
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    displayName TEXT,
-    role TEXT DEFAULT 'user',
-    status TEXT DEFAULT 'active',
-    createdAt TEXT,
-    mustChangePassword INTEGER DEFAULT 0
-  );
+      CREATE TABLE IF NOT EXISTS collections (
+        collection TEXT NOT NULL,
+        doc_id TEXT NOT NULL,
+        data JSONB NOT NULL,
+        PRIMARY KEY (collection, doc_id)
+      );
 
-  CREATE TABLE IF NOT EXISTS collections (
-    collection TEXT NOT NULL,
-    doc_id TEXT NOT NULL,
-    data TEXT NOT NULL,
-    PRIMARY KEY (collection, doc_id)
-  );
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id SERIAL PRIMARY KEY,
+        action TEXT,
+        "userId" TEXT,
+        timestamp TEXT,
+        ip TEXT,
+        details TEXT
+      );
 
-  CREATE TABLE IF NOT EXISTS audit_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    action TEXT,
-    userId TEXT,
-    timestamp TEXT,
-    ip TEXT,
-    details TEXT
-  );
+      CREATE TABLE IF NOT EXISTS system_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
+    `);
+    console.log('PostgreSQL 資料庫初始化成功');
 
-  CREATE TABLE IF NOT EXISTS system_meta (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  );
-`);
-
-console.log('SQLite 資料庫初始化成功:', DB_PATH);
+    // 初始化預設管理員
+    const { rows } = await client.query('SELECT COUNT(*) as cnt FROM users');
+    if (parseInt(rows[0].cnt) === 0) {
+      // 嘗試從 users.json 遷移
+      const localPath = path.join(__dirname, 'users.json');
+      if (fs.existsSync(localPath)) {
+        try {
+          const jsonUsers = JSON.parse(fs.readFileSync(localPath, 'utf8'));
+          for (const u of jsonUsers) {
+            await client.query(
+              `INSERT INTO users (id, username, password, "displayName", role, status, "createdAt", "mustChangePassword")
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING`,
+              [u.id, u.username, u.password, u.displayName || u.username,
+               u.role || 'user', u.status || 'active', u.createdAt || new Date().toISOString(),
+               !!u.mustChangePassword]
+            );
+          }
+          console.log(`從 users.json 遷移了 ${jsonUsers.length} 位使用者`);
+          return;
+        } catch (e) { console.error('users.json 遷移失敗:', e.message); }
+      }
+      // 建立預設管理員
+      await client.query(
+        `INSERT INTO users (id, username, password, "displayName", role, status, "createdAt", "mustChangePassword")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [crypto.randomUUID(), '蕭輝哲', bcrypt.hashSync('Hc@2025!Admin', 10),
+         '蕭輝哲', 'admin', 'active', new Date().toISOString(), true]
+      );
+      console.log('已建立預設管理員帳號');
+    }
+  } finally {
+    client.release();
+  }
+}
 
 // ===== 稽核日誌 =====
-const stmtInsertAudit = db.prepare(
-  'INSERT INTO audit_logs (action, userId, timestamp, ip, details) VALUES (?, ?, ?, ?, ?)'
-);
-
-function auditLog(action, userId, details = {}) {
+async function auditLog(action, userId, details = {}) {
   const timestamp = new Date().toISOString();
   const ip = details.ip || '';
   const msg = details.msg || '';
   console.log(`[AUDIT] ${action} by ${userId || 'anonymous'} - ${msg}`);
   try {
-    stmtInsertAudit.run(action, userId || 'anonymous', timestamp, ip, msg);
+    await pool.query(
+      'INSERT INTO audit_logs (action, "userId", timestamp, ip, details) VALUES ($1, $2, $3, $4, $5)',
+      [action, userId || 'anonymous', timestamp, ip, msg]
+    );
   } catch (e) { /* 稽核寫入失敗不影響主流程 */ }
 }
 
-// ===== 使用者資料（SQLite 持久化）=====
+// ===== 使用者資料（PostgreSQL 持久化）=====
 const BCRYPT_ROUNDS = 10;
 
-// 預備語句
-const stmtGetUsers = db.prepare('SELECT * FROM users');
-const stmtUpsertUser = db.prepare(
-  `INSERT INTO users (id, username, password, displayName, role, status, createdAt, mustChangePassword)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-   ON CONFLICT(id) DO UPDATE SET username=excluded.username, password=excluded.password,
-   displayName=excluded.displayName, role=excluded.role, status=excluded.status,
-   mustChangePassword=excluded.mustChangePassword`
-);
-const stmtDeleteUser = db.prepare('DELETE FROM users WHERE id = ?');
-
-// 初始化預設管理員（僅在 users 表為空時）
-(function initDefaultAdmin() {
-  const count = db.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
-  if (count === 0) {
-    // 嘗試從 users.json 遷移
-    const localPath = path.join(__dirname, 'users.json');
-    if (fs.existsSync(localPath)) {
-      try {
-        const jsonUsers = JSON.parse(fs.readFileSync(localPath, 'utf8'));
-        const insert = db.transaction((users) => {
-          for (const u of users) {
-            stmtUpsertUser.run(u.id, u.username, u.password, u.displayName || u.username,
-              u.role || 'user', u.status || 'active', u.createdAt || new Date().toISOString(),
-              u.mustChangePassword ? 1 : 0);
-          }
-        });
-        insert(jsonUsers);
-        console.log(`從 users.json 遷移了 ${jsonUsers.length} 位使用者`);
-        return;
-      } catch (e) { console.error('users.json 遷移失敗:', e.message); }
-    }
-    // 建立預設管理員
-    stmtUpsertUser.run(
-      crypto.randomUUID(), '蕭輝哲', bcrypt.hashSync('Hc@2025!Admin', BCRYPT_ROUNDS),
-      '蕭輝哲', 'admin', 'active', new Date().toISOString(), 1
-    );
-    console.log('已建立預設管理員帳號');
-  }
-})();
-
-// 密碼複雜度驗證
 function validatePassword(pw) {
   if (pw.length < 8) return '密碼長度至少 8 個字元';
   if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return '密碼須包含英文字母和數字';
   return null;
 }
 
-// 兼容舊 SHA-256 密碼的驗證函數
 function verifyPassword(inputPw, storedHash) {
   if (storedHash.startsWith('$2')) {
     return bcrypt.compareSync(inputPw, storedHash);
@@ -216,22 +206,30 @@ function verifyPassword(inputPw, storedHash) {
   return false;
 }
 
-// 遷移舊密碼為 bcrypt
-function migratePasswordIfNeeded(user, inputPw) {
+async function migratePasswordIfNeeded(user, inputPw) {
   if (!user.password.startsWith('$2')) {
     const newHash = bcrypt.hashSync(inputPw, BCRYPT_ROUNDS);
-    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(newHash, user.id);
+    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [newHash, user.id]);
   }
 }
 
-function loadUsers() {
-  return stmtGetUsers.all();
+async function loadUsers() {
+  const { rows } = await pool.query('SELECT * FROM users');
+  return rows;
 }
 
-function saveUser(user) {
-  stmtUpsertUser.run(user.id, user.username, user.password, user.displayName || user.username,
-    user.role || 'user', user.status || 'active', user.createdAt || new Date().toISOString(),
-    user.mustChangePassword ? 1 : 0);
+async function saveUser(user) {
+  await pool.query(
+    `INSERT INTO users (id, username, password, "displayName", role, status, "createdAt", "mustChangePassword")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (id) DO UPDATE SET
+       username = EXCLUDED.username, password = EXCLUDED.password,
+       "displayName" = EXCLUDED."displayName", role = EXCLUDED.role,
+       status = EXCLUDED.status, "mustChangePassword" = EXCLUDED."mustChangePassword"`,
+    [user.id, user.username, user.password, user.displayName || user.username,
+     user.role || 'user', user.status || 'active', user.createdAt || new Date().toISOString(),
+     !!user.mustChangePassword]
+  );
 }
 
 // ===== Session 管理（含過期機制）=====
@@ -239,7 +237,6 @@ const sessions = {};
 const SESSION_MAX_AGE = 8 * 60 * 60 * 1000; // 8 小時
 const SESSION_IDLE_TIMEOUT = 30 * 60 * 1000; // 30 分鐘閒置
 
-// 定期清理過期 session
 setInterval(() => {
   const now = Date.now();
   for (const [token, session] of Object.entries(sessions)) {
@@ -269,7 +266,6 @@ function getSession(req) {
   const session = sessions[token];
   const now = Date.now();
 
-  // 檢查 session 是否過期
   if (now - session.createdAt > SESSION_MAX_AGE || now - session.lastActivity > SESSION_IDLE_TIMEOUT) {
     delete sessions[token];
     return null;
@@ -295,20 +291,19 @@ function requireAdmin(req, res, next) {
 
 // ===== API 路由 =====
 
-// 登入（含 rate limit）
-app.post('/api/login', loginLimiter, (req, res) => {
+// 登入
+app.post('/api/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: '請輸入帳號和密碼' });
 
-  const users = loadUsers();
+  const users = await loadUsers();
   const user = users.find(u => u.username === username && u.status === 'active');
   if (!user || !verifyPassword(password, user.password)) {
     auditLog('LOGIN_FAILED', username, { ip: req.ip, msg: '帳號或密碼錯誤' });
     return res.status(401).json({ error: '帳號或密碼錯誤' });
   }
 
-  // 自動遷移舊 SHA-256 密碼為 bcrypt
-  migratePasswordIfNeeded(user, password);
+  await migratePasswordIfNeeded(user, password);
 
   const token = createSession(user);
   auditLog('LOGIN_SUCCESS', user.id, { ip: req.ip, msg: user.username });
@@ -338,22 +333,22 @@ app.get('/api/me', requireAuth, (req, res) => {
 
 // ===== 使用者管理 (管理員) =====
 
-app.get('/api/users', requireAdmin, (req, res) => {
-  const users = loadUsers().map(u => ({
+app.get('/api/users', requireAdmin, async (req, res) => {
+  const users = (await loadUsers()).map(u => ({
     id: u.id, username: u.username, displayName: u.displayName,
     role: u.role, status: u.status, createdAt: u.createdAt
   }));
   res.json(users);
 });
 
-app.post('/api/users', requireAdmin, (req, res) => {
+app.post('/api/users', requireAdmin, async (req, res) => {
   const { username, password, displayName, role } = req.body;
   if (!username || !password) return res.status(400).json({ error: '帳號和密碼為必填' });
 
   const pwErr = validatePassword(password);
   if (pwErr) return res.status(400).json({ error: pwErr });
 
-  const users = loadUsers();
+  const users = await loadUsers();
   if (users.find(u => u.username === username)) {
     return res.status(400).json({ error: '此帳號已存在' });
   }
@@ -367,13 +362,13 @@ app.post('/api/users', requireAdmin, (req, res) => {
     status: 'active',
     createdAt: new Date().toISOString()
   };
-  saveUser(newUser);
+  await saveUser(newUser);
   auditLog('USER_CREATED', req.session.userId, { ip: req.ip, msg: `新增使用者: ${username}` });
   res.json({ id: newUser.id, username: newUser.username, displayName: newUser.displayName, role: newUser.role });
 });
 
-app.put('/api/users/:id', requireAdmin, (req, res) => {
-  const users = loadUsers();
+app.put('/api/users/:id', requireAdmin, async (req, res) => {
+  const users = await loadUsers();
   const user = users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: '使用者不存在' });
 
@@ -388,31 +383,31 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   if (role) user.role = role;
   if (status) user.status = status;
 
-  saveUser(user);
+  await saveUser(user);
   auditLog('USER_UPDATED', req.session.userId, { ip: req.ip, msg: `修改使用者: ${user.username}` });
   res.json({ id: user.id, username: user.username, displayName: user.displayName, role: user.role, status: user.status });
 });
 
-app.delete('/api/users/:id', requireAdmin, (req, res) => {
-  const users = loadUsers();
+app.delete('/api/users/:id', requireAdmin, async (req, res) => {
+  const users = await loadUsers();
   const idx = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: '使用者不存在' });
   if (users[idx].username === '蕭輝哲') return res.status(400).json({ error: '不能刪除系統管理員' });
 
   const deletedName = users[idx].username;
-  stmtDeleteUser.run(users[idx].id);
+  await pool.query('DELETE FROM users WHERE id = $1', [users[idx].id]);
   auditLog('USER_DELETED', req.session.userId, { ip: req.ip, msg: `刪除使用者: ${deletedName}` });
   res.json({ ok: true });
 });
 
-app.put('/api/change-password', requireAuth, (req, res) => {
+app.put('/api/change-password', requireAuth, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   if (!oldPassword || !newPassword) return res.status(400).json({ error: '請輸入舊密碼和新密碼' });
 
   const pwErr = validatePassword(newPassword);
   if (pwErr) return res.status(400).json({ error: pwErr });
 
-  const users = loadUsers();
+  const users = await loadUsers();
   const user = users.find(u => u.id === req.session.userId);
   if (!user || !verifyPassword(oldPassword, user.password)) {
     return res.status(400).json({ error: '舊密碼錯誤' });
@@ -420,33 +415,24 @@ app.put('/api/change-password', requireAuth, (req, res) => {
 
   user.password = bcrypt.hashSync(newPassword, BCRYPT_ROUNDS);
   user.mustChangePassword = false;
-  saveUser(user);
+  await saveUser(user);
   auditLog('PASSWORD_CHANGED', req.session.userId, { ip: req.ip });
   res.json({ ok: true });
 });
 
-// ===== 資料同步 API（SQLite）=====
+// ===== 資料同步 API（PostgreSQL）=====
 const DATA_COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
 
-// 預備語句
-const stmtGetCollection = db.prepare('SELECT data FROM collections WHERE collection = ?');
-const stmtUpsertDoc = db.prepare(
-  'INSERT OR REPLACE INTO collections (collection, doc_id, data) VALUES (?, ?, ?)'
-);
-const stmtDeleteCollection = db.prepare('DELETE FROM collections WHERE collection = ?');
-const stmtGetMeta = db.prepare('SELECT value FROM system_meta WHERE key = ?');
-const stmtSetMeta = db.prepare('INSERT OR REPLACE INTO system_meta (key, value) VALUES (?, ?)');
-
 // 讀取所有資料
-app.get('/api/data', requireAuth, (req, res) => {
+app.get('/api/data', requireAuth, async (req, res) => {
   try {
     const result = {};
     for (const col of DATA_COLLECTIONS) {
-      const rows = stmtGetCollection.all(col);
-      result[col] = rows.map(r => JSON.parse(r.data));
+      const { rows } = await pool.query('SELECT data FROM collections WHERE collection = $1', [col]);
+      result[col] = rows.map(r => r.data);
     }
-    const metaRow = stmtGetMeta.get('dataVersion');
-    result.dataVersion = metaRow ? metaRow.value : null;
+    const { rows: metaRows } = await pool.query('SELECT value FROM system_meta WHERE key = $1', ['dataVersion']);
+    result.dataVersion = metaRows.length > 0 ? metaRows[0].value : null;
     auditLog('DATA_READ', req.session.userId, { ip: req.ip, msg: `讀取資料: ${result.cases?.length || 0} 個案` });
     res.json(result);
   } catch (err) {
@@ -456,54 +442,66 @@ app.get('/api/data', requireAuth, (req, res) => {
 });
 
 // 儲存單一集合的項目
-app.put('/api/data/:collection/:id', requireAuth, (req, res) => {
+app.put('/api/data/:collection/:id', requireAuth, async (req, res) => {
   const { collection, id } = req.params;
   if (!DATA_COLLECTIONS.includes(collection)) return res.status(400).json({ error: '無效的集合' });
   if (!id) return res.status(400).json({ error: '缺少 ID' });
   try {
-    // merge: 讀取現有資料並合併
-    const existing = db.prepare('SELECT data FROM collections WHERE collection = ? AND doc_id = ?').get(collection, id);
-    let merged = req.body;
-    if (existing) {
-      merged = { ...JSON.parse(existing.data), ...req.body };
-    }
-    stmtUpsertDoc.run(collection, id, JSON.stringify(merged));
+    // merge: 使用 JSONB || 合併
+    await pool.query(
+      `INSERT INTO collections (collection, doc_id, data) VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (collection, doc_id) DO UPDATE SET data = collections.data || $3::jsonb`,
+      [collection, id, JSON.stringify(req.body)]
+    );
     res.json({ ok: true });
   } catch (err) {
+    console.error('儲存失敗:', err);
     res.status(500).json({ error: '儲存失敗' });
   }
 });
 
 // 批次上傳所有資料
-app.post('/api/data/sync', requireAuth, (req, res) => {
+app.post('/api/data/sync', requireAuth, async (req, res) => {
+  const client = await pool.connect();
   try {
     const data = req.body;
     let totalItems = 0;
 
-    const syncAll = db.transaction(() => {
-      for (const col of DATA_COLLECTIONS) {
-        const items = data[col];
-        if (!items || !Array.isArray(items)) continue;
-        stmtDeleteCollection.run(col);
-        for (const item of items) {
-          if (item.id) {
-            stmtUpsertDoc.run(col, item.id, JSON.stringify(item));
-          }
+    await client.query('BEGIN');
+    for (const col of DATA_COLLECTIONS) {
+      const items = data[col];
+      if (!items || !Array.isArray(items)) continue;
+      await client.query('DELETE FROM collections WHERE collection = $1', [col]);
+      for (const item of items) {
+        if (item.id) {
+          await client.query(
+            'INSERT INTO collections (collection, doc_id, data) VALUES ($1, $2, $3::jsonb)',
+            [col, item.id, JSON.stringify(item)]
+          );
         }
-        totalItems += items.length;
       }
-      if (data.dataVersion) {
-        stmtSetMeta.run('dataVersion', data.dataVersion);
-        stmtSetMeta.run('updatedAt', new Date().toISOString());
-      }
-    });
+      totalItems += items.length;
+    }
+    if (data.dataVersion) {
+      await client.query(
+        'INSERT INTO system_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+        ['dataVersion', data.dataVersion]
+      );
+      await client.query(
+        'INSERT INTO system_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+        ['updatedAt', new Date().toISOString()]
+      );
+    }
+    await client.query('COMMIT');
 
-    syncAll();
     auditLog('DATA_SYNC', req.session.userId, { ip: req.ip, msg: `同步 ${totalItems} 筆資料` });
     res.json({ ok: true, totalItems });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('資料同步失敗:', err);
     res.status(500).json({ error: '資料同步失敗' });
+  } finally {
+    client.release();
   }
 });
 
@@ -605,6 +603,14 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// ===== 啟動伺服器 =====
+initDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('資料庫初始化失敗:', err);
+    process.exit(1);
+  });
