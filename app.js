@@ -1967,6 +1967,10 @@ async function uploadLCMSFile(file) {
         let enrollDate = typeof r[12] === 'number' ? excelDateToISO(r[12]) : rocToAD(r[12]);
         const addr = String(r[8] || '').trim();
         const distMatch = addr.match(/([\u4e00-\u9fff]+[區鄉鎮市])/);
+        let doctorVisitDate = '';
+        if (typeof r[15] === 'number') doctorVisitDate = excelDateToISO(r[15]);
+        else if (r[15]) doctorVisitDate = rocToAD(r[15]);
+
         lcmsCases.push({
           caseNo: String(r[1] || '').trim(), name, idNumber,
           gender: String(r[5] || '').trim(),
@@ -1976,7 +1980,7 @@ async function uploadLCMSFile(file) {
           contactPerson: String(r[10] || '').replace(/[\r\n]/g, ' ').trim(),
           phone: String(r[11] || '').replace(/[\r\n]/g, ' ').trim(),
           doctorName: String(r[13] || '').trim(),
-          enrollDate, status: 'active'
+          enrollDate, doctorVisitDate, status: 'active'
         });
       }
       // 讀取結案總表
@@ -2068,6 +2072,8 @@ function computeSmartDiff(lcmsCases) {
       if (lc.homeVisitDates && lc.homeVisitDates !== (sc.homeVisitDates || ''))
         diffs.push({ field: '家訪日期', oldVal: sc.homeVisitDates || '(空)', newVal: lc.homeVisitDates });
       // 本地清冊格式的欄位
+      if (lc.doctorVisitDate && lc.doctorVisitDate !== (sc.doctorVisitDate || ''))
+        diffs.push({ field: '醫師家訪日期', oldVal: sc.doctorVisitDate || '(空)', newVal: lc.doctorVisitDate });
       if (lc.doctorName && lc.doctorName !== (sc.doctorName || ''))
         diffs.push({ field: '主責醫師', oldVal: sc.doctorName || '(空)', newVal: lc.doctorName });
       if (lc.address && lc.address !== (sc.address || ''))
@@ -2242,6 +2248,7 @@ async function applySmartDiff() {
       district: lc.district || '', village: lc.village || '', address: lc.address || '',
       status: lc.status === 'closed' ? 'closed' : 'active',
       doctorName: lc.doctorName || '', enrollDate: lc.enrollDate || '', age: lc.age,
+      doctorVisitDate: lc.doctorVisitDate || '',
       careManager: lc.careManager || '', unitName: lc.unitName || '',
       lcmsOpinionCount: lc.lcmsOpinionCount || 0, lcmsBillingCount: lc.lcmsBillingCount || 0,
       homeVisitDates: lc.homeVisitDates || '',
@@ -2275,6 +2282,7 @@ async function applySmartDiff() {
         case '意見書數量(年度)': sc.lcmsOpinionCount = item.lcms.lcmsOpinionCount; break;
         case '申報紀錄數量(年度)': sc.lcmsBillingCount = item.lcms.lcmsBillingCount; break;
         case '家訪日期': sc.homeVisitDates = item.lcms.homeVisitDates; break;
+        case '醫師家訪日期': sc.doctorVisitDate = item.lcms.doctorVisitDate; break;
         case '主責醫師': sc.doctorName = item.lcms.doctorName; break;
         case '地址': sc.address = item.lcms.address; break;
         case '電話': sc.phone = item.lcms.phone; break;
@@ -2293,6 +2301,35 @@ async function applySmartDiff() {
     if (target) { target.status = 'closed'; closedCount++; }
   });
 
+  // 根據醫師家訪日期自動建立意見書
+  let opinionCount = 0;
+  if (!db.opinions) db.opinions = [];
+  db.cases.forEach(c => {
+    if (!c.doctorVisitDate || c.status !== 'active') return;
+    // 檢查是否已有同日期的意見書
+    const exists = db.opinions.some(o => o.caseId === c.id && o.issueDate === c.doctorVisitDate);
+    if (exists) return;
+    const expDate = new Date(c.doctorVisitDate);
+    expDate.setMonth(expDate.getMonth() + 6);
+    const expiryStr = expDate.toISOString().slice(0, 10);
+    const now = new Date();
+    let status = 'active';
+    if (now > expDate) status = 'expired';
+    else if ((expDate - now) / (1000*60*60*24) <= 30) status = 'expiring';
+    const maxOpId = db.opinions.reduce((max, o) => {
+      const num = parseInt((o.id || '').replace('OP', ''));
+      return num > max ? num : max;
+    }, 0);
+    db.opinions.push({
+      id: 'OP' + String(maxOpId + 1 + opinionCount).padStart(4, '0'),
+      caseId: c.id, doctorId: '', doctorName: c.doctorName || '',
+      issueDate: c.doctorVisitDate, homeVisitDate: c.doctorVisitDate,
+      expiryDate: expiryStr, sequence: 1, yearCount: 1,
+      diseaseStatus: '穩定', functionalPrognosis: '穩定', status
+    });
+    opinionCount++;
+  });
+
   if (addedCount > 0 || updatedCount > 0 || closedCount > 0) {
     saveDB_local(db);
     closeModal();
@@ -2303,6 +2340,7 @@ async function applySmartDiff() {
     if (addedCount > 0) msgs.push(`新增 ${addedCount} 個案`);
     if (updatedCount > 0) msgs.push(`更新 ${updatedCount} 個案`);
     if (closedCount > 0) msgs.push(`結案 ${closedCount} 個案`);
+    if (opinionCount > 0) msgs.push(`建立 ${opinionCount} 筆意見書`);
     showToast(msgs.join('、') + ' — 正在同步到雲端...');
 
     if (typeof renderDashboard === 'function') renderDashboard();
