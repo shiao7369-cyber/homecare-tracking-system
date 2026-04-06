@@ -449,8 +449,7 @@ async function deleteUser(id, username) {
   }
 }
 
-// ===== LCMS 批次同步 =====
-function syncLCMS() {
+/* ===== LCMS 功能已移至 app.js 的統一上傳 =====
   // Create a hidden file input and trigger it
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
@@ -874,3 +873,4 @@ function applyLCMSSync() {
     alert('未選取任何項目，未做變更。');
   }
 }
+===== */

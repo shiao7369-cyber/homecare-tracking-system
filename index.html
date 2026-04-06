@@ -101,8 +101,7 @@
     <div class="top-bar-actions">
       <span class="today-date" id="today-date"></span>
       <button class="btn btn-sm btn-outline" onclick="exportData()">匯出資料</button>
-      <button class="btn btn-sm btn-primary" onclick="importData()">匯入資料</button>
-      <button class="btn btn-sm btn-outline" onclick="syncLCMS()" style="background:#FF9800;color:#fff;border-color:#FF9800;">&#x27F2; LCMS同步</button>
+      <button class="btn btn-sm btn-primary" onclick="openUploadZone()">匯入資料</button>
       <button class="btn btn-sm btn-outline" onclick="syncToCloud()" id="btn-sync-cloud" style="background:#4CAF50;color:#fff;border-color:#4CAF50;">☁ 同步到雲端</button>
     </div>
   </header>
@@ -483,8 +482,20 @@
   </div>
 </div>
 
+<!-- ====== 拖拉上傳區 ====== -->
+<div id="upload-overlay" class="upload-overlay" style="display:none">
+  <div class="upload-zone" id="upload-zone">
+    <button class="upload-close" onclick="closeUploadZone()">&times;</button>
+    <div class="upload-icon">📂</div>
+    <h3>拖拉檔案至此，或點擊選擇檔案</h3>
+    <p class="upload-hint">支援格式：LCMS 個案清冊 (.xls / .xlsx)、系統備份 (.json)</p>
+    <p class="upload-hint">系統會自動判讀檔案類型，比對新增/異動/結案個案</p>
+    <input type="file" id="upload-file-input" accept=".json,.xls,.xlsx" style="display:none" onchange="handleUnifiedUpload(event)">
+    <button class="btn btn-primary" onclick="document.getElementById('upload-file-input').click()">選擇檔案</button>
+  </div>
+</div>
+
 <div id="toast-container"></div>
-<input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImport(event)">
 
 <script src="firebase-config.js"></script>
 <script src="cases-data.js"></script>

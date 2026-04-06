@@ -1820,29 +1820,372 @@ function exportData() {
   showToast('資料已匯出');
 }
 
-function importData() {
-  document.getElementById('import-file-input').click();
+// ==========================================
+//  統一拖拉上傳
+// ==========================================
+function openUploadZone() {
+  document.getElementById('upload-overlay').style.display = 'flex';
+}
+function closeUploadZone() {
+  document.getElementById('upload-overlay').style.display = 'none';
 }
 
-function handleImport(e) {
+// 拖拉事件
+document.addEventListener('DOMContentLoaded', () => {
+  const overlay = document.getElementById('upload-overlay');
+  const zone = document.getElementById('upload-zone');
+  if (!zone) return;
+
+  ['dragenter','dragover'].forEach(evt => {
+    zone.addEventListener(evt, e => { e.preventDefault(); zone.classList.add('dragover'); });
+  });
+  ['dragleave','drop'].forEach(evt => {
+    zone.addEventListener(evt, e => { e.preventDefault(); zone.classList.remove('dragover'); });
+  });
+  zone.addEventListener('drop', e => {
+    const file = e.dataTransfer.files[0];
+    if (file) processUploadFile(file);
+  });
+  // 點擊背景關閉
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeUploadZone(); });
+});
+
+function handleUnifiedUpload(e) {
   const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = function(ev) {
-    try {
-      const data = JSON.parse(ev.target.result);
-      if (data.cases && data.members && Array.isArray(data.cases) && Array.isArray(data.members)) {
-        db = data;
-        saveDB(db);
-        showToast('資料匯入成功');
-        switchPage('dashboard');
-      } else {
-        showToast('檔案格式不正確', 'danger');
-      }
-    } catch(err) {
-      showToast('檔案解析失敗', 'danger');
-    }
-  };
-  reader.readAsText(file);
+  if (file) processUploadFile(file);
   e.target.value = '';
+}
+
+function processUploadFile(file) {
+  const ext = file.name.toLowerCase().split('.').pop();
+
+  if (ext === 'json') {
+    // JSON 系統備份匯入
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.cases && data.members && Array.isArray(data.cases) && Array.isArray(data.members)) {
+          db = data;
+          saveDB(db);
+          closeUploadZone();
+          showToast('系統備份匯入成功');
+          switchPage('dashboard');
+        } else {
+          showToast('JSON 格式不正確，需包含 cases 和 members', 'danger');
+        }
+      } catch(err) {
+        showToast('JSON 檔案解析失敗', 'danger');
+      }
+    };
+    reader.readAsText(file);
+  } else if (ext === 'xls' || ext === 'xlsx') {
+    // LCMS Excel 上傳
+    closeUploadZone();
+    uploadLCMSFile(file);
+  } else {
+    showToast('不支援的檔案格式，請上傳 .xls / .xlsx / .json', 'danger');
+  }
+}
+
+async function uploadLCMSFile(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const res = await fetch('/api/lcms-sync', {
+      method: 'POST',
+      headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {},
+      body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '上傳失敗');
+
+    const lcmsCases = data.cases;
+    const diff = computeSmartDiff(lcmsCases);
+    showSmartDiffModal(diff, lcmsCases);
+  } catch (err) {
+    showToast('LCMS 檔案處理失敗: ' + err.message, 'danger');
+  }
+}
+
+function computeSmartDiff(lcmsCases) {
+  const systemCases = (db && db.cases) ? db.cases : [];
+
+  const systemMap = {};
+  systemCases.forEach(c => {
+    if (c.idNumber) systemMap[c.idNumber.toUpperCase()] = c;
+  });
+  const lcmsMap = {};
+  lcmsCases.forEach(c => {
+    if (c.idNumber) lcmsMap[c.idNumber.toUpperCase()] = c;
+  });
+
+  const newCases = [];
+  const changed = [];
+  const possiblyClosed = [];
+
+  lcmsCases.forEach(lc => {
+    const key = lc.idNumber.toUpperCase();
+    const sc = systemMap[key];
+    if (!sc) {
+      newCases.push(lc);
+    } else {
+      const diffs = [];
+      if (lc.cmsLevel != null && sc.cmsLevel != null && String(lc.cmsLevel) !== String(sc.cmsLevel))
+        diffs.push({ field: 'CMS等級', oldVal: sc.cmsLevel, newVal: lc.cmsLevel });
+      if (lc.category && sc.category && lc.category !== sc.category)
+        diffs.push({ field: '福利身分', oldVal: sc.category, newVal: lc.category });
+      if (lc.district && sc.district && lc.district !== sc.district)
+        diffs.push({ field: '行政區', oldVal: sc.district, newVal: lc.district });
+      if (lc.age != null && sc.age != null && String(lc.age) !== String(sc.age))
+        diffs.push({ field: '年齡', oldVal: sc.age, newVal: lc.age });
+      if (lc.caseNo && sc.caseNo && lc.caseNo !== sc.caseNo)
+        diffs.push({ field: '案號', oldVal: sc.caseNo, newVal: lc.caseNo });
+      if (lc.enrollDate && sc.enrollDate && lc.enrollDate !== sc.enrollDate)
+        diffs.push({ field: '派案日期', oldVal: sc.enrollDate, newVal: lc.enrollDate });
+      if (lc.careManager && lc.careManager !== (sc.careManager || ''))
+        diffs.push({ field: '照管專員', oldVal: sc.careManager || '(空)', newVal: lc.careManager });
+      if (lc.village && lc.village !== (sc.village || ''))
+        diffs.push({ field: '村里', oldVal: sc.village || '(空)', newVal: lc.village });
+      if (lc.unitName && lc.unitName !== (sc.unitName || ''))
+        diffs.push({ field: 'A單位名稱', oldVal: sc.unitName || '(空)', newVal: lc.unitName });
+      if (lc.lcmsOpinionCount != null && lc.lcmsOpinionCount !== (sc.lcmsOpinionCount || 0))
+        diffs.push({ field: '意見書數量(年度)', oldVal: sc.lcmsOpinionCount || 0, newVal: lc.lcmsOpinionCount });
+      if (lc.lcmsBillingCount != null && lc.lcmsBillingCount !== (sc.lcmsBillingCount || 0))
+        diffs.push({ field: '申報紀錄數量(年度)', oldVal: sc.lcmsBillingCount || 0, newVal: lc.lcmsBillingCount });
+      if (lc.homeVisitDates && lc.homeVisitDates !== (sc.homeVisitDates || ''))
+        diffs.push({ field: '家訪日期', oldVal: sc.homeVisitDates || '(空)', newVal: lc.homeVisitDates });
+      // LCMS 檔案中標記結案的個案
+      if (lc.status === 'closed' && sc.status === 'active')
+        diffs.push({ field: '狀態', oldVal: '收案中', newVal: '結案' });
+      if (diffs.length > 0) {
+        changed.push({ lcms: lc, system: sc, diffs });
+      }
+    }
+  });
+
+  // 系統中收案但 LCMS 無資料 → 可能結案
+  systemCases.forEach(sc => {
+    if (sc.status !== 'active') return;
+    const key = (sc.idNumber || '').toUpperCase();
+    if (key && !lcmsMap[key]) {
+      possiblyClosed.push(sc);
+    }
+  });
+
+  return {
+    lcmsTotal: lcmsCases.length,
+    systemTotal: systemCases.filter(c => c.status === 'active').length,
+    newCases, changed, possiblyClosed
+  };
+}
+
+function showSmartDiffModal(diff) {
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody = document.getElementById('modal-body');
+  const modalFooter = document.getElementById('modal-footer');
+
+  modalTitle.textContent = '個案資料比對結果';
+
+  let html = `<div style="max-height:70vh;overflow-y:auto;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0.75rem;margin-bottom:1rem;">
+      <div style="background:#e3f2fd;padding:0.75rem;border-radius:8px;text-align:center;">
+        <div style="font-size:1.5rem;font-weight:bold;color:#1565c0;">${diff.lcmsTotal}</div>
+        <div style="font-size:0.85rem;color:#555;">LCMS 個案數</div>
+      </div>
+      <div style="background:#f3e5f5;padding:0.75rem;border-radius:8px;text-align:center;">
+        <div style="font-size:1.5rem;font-weight:bold;color:#7b1fa2;">${diff.systemTotal}</div>
+        <div style="font-size:0.85rem;color:#555;">系統收案數</div>
+      </div>
+      <div style="background:#e8f5e9;padding:0.75rem;border-radius:8px;text-align:center;">
+        <div style="font-size:1.5rem;font-weight:bold;color:#2e7d32;">${diff.newCases.length}</div>
+        <div style="font-size:0.85rem;color:#555;">新增個案</div>
+      </div>
+      <div style="background:#fff3e0;padding:0.75rem;border-radius:8px;text-align:center;">
+        <div style="font-size:1.5rem;font-weight:bold;color:#e65100;">${diff.changed.length}</div>
+        <div style="font-size:0.85rem;color:#555;">資料異動</div>
+      </div>
+      <div style="background:#fce4ec;padding:0.75rem;border-radius:8px;text-align:center;">
+        <div style="font-size:1.5rem;font-weight:bold;color:#c62828;">${diff.possiblyClosed.length}</div>
+        <div style="font-size:0.85rem;color:#555;">可能結案</div>
+      </div>
+    </div>`;
+
+  if (diff.newCases.length > 0) {
+    html += `<details open style="margin-bottom:1rem;">
+      <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#2e7d32;margin-bottom:0.5rem;">
+        新增個案 (${diff.newCases.length})
+      </summary>
+      <div style="overflow-x:auto;">
+        <table class="data-table" style="font-size:0.85rem;"><thead><tr>
+          <th><input type="checkbox" id="diff-new-all" onchange="toggleDiffCheckAll(this,'diff-new-chk')" checked></th>
+          <th>案號</th><th>姓名</th><th>身分證號</th><th>CMS</th><th>身分別</th><th>行政區</th><th>派案日期</th>
+        </tr></thead><tbody>
+          ${diff.newCases.map((c, i) => `<tr>
+            <td><input type="checkbox" class="diff-new-chk" data-idx="${i}" checked></td>
+            <td>${esc(c.caseNo)}</td><td>${esc(c.name)}</td><td>${maskId(c.idNumber)}</td>
+            <td>${c.cmsLevel || '-'}</td><td>${esc(c.category || '-')}</td>
+            <td>${esc(c.district || '-')}</td><td>${esc(c.enrollDate || '-')}</td>
+          </tr>`).join('')}
+        </tbody></table>
+      </div>
+    </details>`;
+  }
+
+  if (diff.changed.length > 0) {
+    html += `<details open style="margin-bottom:1rem;">
+      <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#e65100;margin-bottom:0.5rem;">
+        資料異動 (${diff.changed.length})
+      </summary>
+      <div style="overflow-x:auto;">
+        <table class="data-table" style="font-size:0.85rem;"><thead><tr>
+          <th><input type="checkbox" id="diff-chg-all" onchange="toggleDiffCheckAll(this,'diff-chg-chk')" checked></th>
+          <th>姓名</th><th>身分證號</th><th>異動欄位</th><th>原值</th><th>新值</th>
+        </tr></thead><tbody>
+          ${diff.changed.map((item, i) => item.diffs.map((d, j) => `<tr>
+            ${j === 0 ? `<td rowspan="${item.diffs.length}"><input type="checkbox" class="diff-chg-chk" data-idx="${i}" checked></td>
+              <td rowspan="${item.diffs.length}">${esc(item.lcms.name)}</td>
+              <td rowspan="${item.diffs.length}">${maskId(item.lcms.idNumber)}</td>` : ''}
+            <td><span style="color:#e65100;font-weight:500;">${esc(d.field)}</span></td>
+            <td style="color:#999;text-decoration:line-through;">${esc(String(d.oldVal))}</td>
+            <td style="color:#2e7d32;font-weight:500;">${esc(String(d.newVal))}</td>
+          </tr>`).join('')).join('')}
+        </tbody></table>
+      </div>
+    </details>`;
+  }
+
+  if (diff.possiblyClosed.length > 0) {
+    html += `<details style="margin-bottom:1rem;">
+      <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#c62828;margin-bottom:0.5rem;">
+        可能結案 (${diff.possiblyClosed.length}) — 系統中收案但 LCMS 無資料
+      </summary>
+      <div style="overflow-x:auto;">
+        <table class="data-table" style="font-size:0.85rem;"><thead><tr>
+          <th><input type="checkbox" id="diff-close-all" onchange="toggleDiffCheckAll(this,'diff-close-chk')"></th>
+          <th>姓名</th><th>身分證號</th><th>CMS</th><th>負責醫師</th><th>收案日期</th>
+        </tr></thead><tbody>
+          ${diff.possiblyClosed.map((c, i) => `<tr>
+            <td><input type="checkbox" class="diff-close-chk" data-idx="${i}"></td>
+            <td>${esc(c.name || '-')}</td><td>${maskId(c.idNumber)}</td>
+            <td>${c.cmsLevel || '-'}</td><td>${esc(c.doctorName || '-')}</td>
+            <td>${esc(c.enrollDate || '-')}</td>
+          </tr>`).join('')}
+        </tbody></table>
+      </div>
+    </details>`;
+  }
+
+  if (diff.newCases.length === 0 && diff.changed.length === 0 && diff.possiblyClosed.length === 0) {
+    html += '<p style="text-align:center;color:#666;padding:2rem;">資料完全一致，無需同步。</p>';
+  }
+
+  html += '</div>';
+  modalBody.innerHTML = html;
+  window._smartDiff = diff;
+
+  const hasChanges = diff.newCases.length > 0 || diff.changed.length > 0 || diff.possiblyClosed.length > 0;
+  modalFooter.innerHTML = `
+    <button class="btn btn-outline" onclick="closeModal()">關閉</button>
+    ${hasChanges ? '<button class="btn btn-primary" onclick="applySmartDiff()">套用勾選項目</button>' : ''}
+  `;
+
+  const modal = document.getElementById('modal');
+  modal.style.maxWidth = '900px';
+  modal.style.width = '90vw';
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+function toggleDiffCheckAll(master, className) {
+  document.querySelectorAll('.' + className).forEach(cb => { cb.checked = master.checked; });
+}
+
+function applySmartDiff() {
+  const diff = window._smartDiff;
+  if (!diff) return;
+
+  let addedCount = 0, updatedCount = 0, closedCount = 0;
+
+  // 新增個案
+  document.querySelectorAll('.diff-new-chk:checked').forEach(cb => {
+    const lc = diff.newCases[parseInt(cb.dataset.idx)];
+    if (!lc) return;
+    const maxId = db.cases.reduce((max, c) => {
+      const num = parseInt((c.id || '').replace('C', ''));
+      return num > max ? num : max;
+    }, 0);
+    db.cases.push({
+      id: 'C' + String(maxId + 1 + addedCount).padStart(3, '0'),
+      caseNo: lc.caseNo || '', name: lc.name, idNumber: lc.idNumber,
+      gender: '', cmsLevel: lc.cmsLevel, category: lc.category || '',
+      district: lc.district || '', village: lc.village || '', address: '',
+      status: lc.status === 'closed' ? 'closed' : 'active',
+      doctorName: '', enrollDate: lc.enrollDate || '', age: lc.age,
+      careManager: lc.careManager || '', unitName: lc.unitName || '',
+      lcmsOpinionCount: lc.lcmsOpinionCount || 0, lcmsBillingCount: lc.lcmsBillingCount || 0,
+      homeVisitDates: lc.homeVisitDates || '',
+      phone: '', diagnosis: '', notes: '',
+      opinionDate: '', opinionExpiry: '',
+      acpStatus: 'not_started', adStatus: 'not_started',
+      acpExplainDate: '', adExplainDate: '', acpSignDate: '',
+      nhiCardDate: '', familyExplainDate: ''
+    });
+    addedCount++;
+  });
+
+  // 異動更新
+  document.querySelectorAll('.diff-chg-chk:checked').forEach(cb => {
+    const item = diff.changed[parseInt(cb.dataset.idx)];
+    if (!item) return;
+    const sc = db.cases.find(c => c.idNumber && c.idNumber.toUpperCase() === item.lcms.idNumber.toUpperCase());
+    if (!sc) return;
+    item.diffs.forEach(d => {
+      switch (d.field) {
+        case 'CMS等級': sc.cmsLevel = item.lcms.cmsLevel; break;
+        case '福利身分': sc.category = item.lcms.category; break;
+        case '行政區': sc.district = item.lcms.district; break;
+        case '年齡': sc.age = item.lcms.age; break;
+        case '案號': sc.caseNo = item.lcms.caseNo; break;
+        case '派案日期': sc.enrollDate = item.lcms.enrollDate; break;
+        case '照管專員': sc.careManager = item.lcms.careManager; break;
+        case '村里': sc.village = item.lcms.village; break;
+        case 'A單位名稱': sc.unitName = item.lcms.unitName; break;
+        case '意見書數量(年度)': sc.lcmsOpinionCount = item.lcms.lcmsOpinionCount; break;
+        case '申報紀錄數量(年度)': sc.lcmsBillingCount = item.lcms.lcmsBillingCount; break;
+        case '家訪日期': sc.homeVisitDates = item.lcms.homeVisitDates; break;
+        case '狀態': sc.status = 'closed'; break;
+      }
+    });
+    updatedCount++;
+  });
+
+  // 結案
+  document.querySelectorAll('.diff-close-chk:checked').forEach(cb => {
+    const sc = diff.possiblyClosed[parseInt(cb.dataset.idx)];
+    if (!sc) return;
+    const target = db.cases.find(c => c.id === sc.id);
+    if (target) { target.status = 'closed'; closedCount++; }
+  });
+
+  if (addedCount > 0 || updatedCount > 0 || closedCount > 0) {
+    saveDB(db);
+  }
+
+  closeModal();
+  const modal = document.getElementById('modal');
+  modal.style.maxWidth = ''; modal.style.width = '';
+
+  const msgs = [];
+  if (addedCount > 0) msgs.push(`新增 ${addedCount} 個案`);
+  if (updatedCount > 0) msgs.push(`更新 ${updatedCount} 個案`);
+  if (closedCount > 0) msgs.push(`結案 ${closedCount} 個案`);
+
+  if (msgs.length > 0) {
+    showToast(msgs.join('、'));
+    if (typeof renderDashboard === 'function') renderDashboard();
+    if (typeof renderCases === 'function') renderCases();
+    if (typeof updateAlertBadge === 'function') updateAlertBadge();
+  } else {
+    showToast('未選取任何項目');
+  }
 }

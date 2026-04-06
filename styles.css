@@ -647,3 +647,31 @@ textarea.form-input { height: auto; padding: .5rem .75rem; resize: vertical; }
   .page { display: block !important; }
   .stat-card, .card { box-shadow: none; border: 1px solid #ccc; }
 }
+
+/* ===== 拖拉上傳區 ===== */
+.upload-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5); z-index: 10000;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
+}
+.upload-zone {
+  position: relative;
+  background: #fff; border-radius: 16px; padding: 3rem 4rem;
+  text-align: center; max-width: 560px; width: 90%;
+  border: 3px dashed var(--primary);
+  transition: border-color .2s, background .2s;
+}
+.upload-zone.dragover {
+  border-color: #16a34a; background: #f0fdf4;
+}
+.upload-close {
+  position: absolute; top: 12px; right: 16px;
+  background: none; border: none; font-size: 1.5rem;
+  color: #999; cursor: pointer; line-height: 1;
+}
+.upload-close:hover { color: #333; }
+.upload-icon { font-size: 3.5rem; margin-bottom: 1rem; }
+.upload-zone h3 { margin: 0 0 .75rem; color: #333; font-size: 1.15rem; }
+.upload-hint { color: #888; font-size: .85rem; margin: .25rem 0; }
+.upload-zone .btn { margin-top: 1.25rem; }
