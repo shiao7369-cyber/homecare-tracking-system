@@ -1086,12 +1086,14 @@ function renderOpinions() {
   const expired = caseOpStatus.filter(x => x.status === 'expired').length;
   const pending = caseOpStatus.filter(x => x.status === 'pending').length;
 
+  const _cur = status || 'all';
+  const btnStyle = (key) => `cursor:pointer;transition:all .15s;${_cur === key ? 'outline:3px solid var(--primary);outline-offset:2px;transform:scale(1.03);' : ''}`;
   document.getElementById('opinion-summary').innerHTML = `
-    <div class="summary-item"><div class="summary-value">${activeCases.length}</div><div class="summary-label">總意見書數</div></div>
-    <div class="summary-item"><div class="summary-value" style="color:var(--success)">${valid}</div><div class="summary-label">有效</div></div>
-    <div class="summary-item"><div class="summary-value" style="color:var(--warning)">${expiring}</div><div class="summary-label">即將到期(30天內)</div></div>
-    <div class="summary-item"><div class="summary-value" style="color:var(--danger)">${expired}</div><div class="summary-label">已過期</div></div>
-    <div class="summary-item"><div class="summary-value" style="color:var(--gray-500)">${pending}</div><div class="summary-label">待開立</div></div>
+    <div class="summary-item" style="${btnStyle('all')}" onclick="document.getElementById('opinion-filter-status').value='';renderOpinions()"><div class="summary-value">${activeCases.length}</div><div class="summary-label">總意見書數</div></div>
+    <div class="summary-item" style="${btnStyle('valid')}" onclick="document.getElementById('opinion-filter-status').value='valid';renderOpinions()"><div class="summary-value" style="color:var(--success)">${valid}</div><div class="summary-label">有效</div></div>
+    <div class="summary-item" style="${btnStyle('expiring')}" onclick="document.getElementById('opinion-filter-status').value='expiring';renderOpinions()"><div class="summary-value" style="color:var(--warning)">${expiring}</div><div class="summary-label">即將到期(30天內)</div></div>
+    <div class="summary-item" style="${btnStyle('expired')}" onclick="document.getElementById('opinion-filter-status').value='expired';renderOpinions()"><div class="summary-value" style="color:var(--danger)">${expired}</div><div class="summary-label">已過期</div></div>
+    <div class="summary-item" style="${btnStyle('pending')}" onclick="document.getElementById('opinion-filter-status').value='pending';renderOpinions()"><div class="summary-value" style="color:var(--gray-500)">${pending}</div><div class="summary-label">待開立</div></div>
   `;
 
   let filtered = caseOpStatus.filter(x => {

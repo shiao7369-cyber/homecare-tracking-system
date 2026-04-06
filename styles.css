@@ -451,6 +451,11 @@ textarea.form-input { height: auto; padding: .5rem .75rem; resize: vertical; }
   padding: 1rem;
   text-align: center;
   box-shadow: var(--shadow);
+  transition: transform .15s, box-shadow .15s;
+}
+.summary-item:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: var(--shadow-lg);
 }
 .summary-value { font-size: 1.5rem; font-weight: 800; }
 .summary-label { font-size: .75rem; color: var(--gray-500); margin-top: .2rem; }
