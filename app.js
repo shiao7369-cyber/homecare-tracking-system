@@ -605,6 +605,7 @@ function viewCase(caseId) {
         <table style="font-size:.85rem;width:100%">
           <tr><td style="padding:2px 8px;color:var(--gray-500)">聯絡電話</td><td>${esc(c.phone || '-')}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">主要聯絡人</td><td>${esc(c.contactPerson || '-')}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">A單位名稱</td><td>${esc(c.unitName || '-')}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">負責醫師</td><td>${doc ? esc(doc.name) : esc(c.doctorName || '-')}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">個管師</td><td>${nurse ? esc(nurse.name) : '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">醫師家訪日</td><td>${c.doctorVisitDate || '-'}</td></tr>
