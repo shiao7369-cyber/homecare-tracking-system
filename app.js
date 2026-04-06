@@ -2349,6 +2349,14 @@ async function applySmartDiff() {
     if (target) { target.status = 'closed'; closedCount++; }
   });
 
+  // 根據 doctorName 自動配對 doctorId
+  const doctors = getDoctors(db).filter(d => d.status === 'active');
+  db.cases.forEach(c => {
+    if (c.doctorId || !c.doctorName) return;
+    const match = doctors.find(d => d.name === c.doctorName);
+    if (match) c.doctorId = match.id;
+  });
+
   // 根據醫師家訪日期自動建立意見書
   let opinionCount = 0;
   if (!db.opinions) db.opinions = [];
