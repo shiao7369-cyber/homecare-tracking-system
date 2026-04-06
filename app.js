@@ -2100,7 +2100,7 @@ function toggleDiffCheckAll(master, className) {
   document.querySelectorAll('.' + className).forEach(cb => { cb.checked = master.checked; });
 }
 
-function applySmartDiff() {
+async function applySmartDiff() {
   const diff = window._smartDiff;
   if (!diff) return;
 
@@ -2168,24 +2168,32 @@ function applySmartDiff() {
   });
 
   if (addedCount > 0 || updatedCount > 0 || closedCount > 0) {
-    saveDB(db);
-  }
+    saveDB_local(db);
+    closeModal();
+    const modal = document.getElementById('modal');
+    modal.style.maxWidth = ''; modal.style.width = '';
 
-  closeModal();
-  const modal = document.getElementById('modal');
-  modal.style.maxWidth = ''; modal.style.width = '';
+    const msgs = [];
+    if (addedCount > 0) msgs.push(`新增 ${addedCount} 個案`);
+    if (updatedCount > 0) msgs.push(`更新 ${updatedCount} 個案`);
+    if (closedCount > 0) msgs.push(`結案 ${closedCount} 個案`);
+    showToast(msgs.join('、') + ' — 正在同步到雲端...');
 
-  const msgs = [];
-  if (addedCount > 0) msgs.push(`新增 ${addedCount} 個案`);
-  if (updatedCount > 0) msgs.push(`更新 ${updatedCount} 個案`);
-  if (closedCount > 0) msgs.push(`結案 ${closedCount} 個案`);
-
-  if (msgs.length > 0) {
-    showToast(msgs.join('、'));
     if (typeof renderDashboard === 'function') renderDashboard();
     if (typeof renderCases === 'function') renderCases();
     if (typeof updateAlertBadge === 'function') updateAlertBadge();
+
+    try {
+      await syncDataToBackend(db);
+      showToast(msgs.join('、') + ' — 雲端同步完成 ✓');
+    } catch (err) {
+      console.error('雲端同步失敗:', err);
+      showToast('資料已存本地，但雲端同步失敗: ' + err.message, 'danger');
+    }
   } else {
+    closeModal();
+    const modal = document.getElementById('modal');
+    modal.style.maxWidth = ''; modal.style.width = '';
     showToast('未選取任何項目');
   }
 }
