@@ -301,27 +301,47 @@ function generateBillingRecords(cases, opinions, services) {
 // ===== 成員資料獨立儲存 =====
 const MEMBERS_KEY = 'homecare_members';
 
+// 醫師專科正確對照表（以此為準）
+const DOCTOR_SPECIALTY_MAP = {
+  '李致有': '小兒科', '徐子茜': '小兒科',
+  '蕭輝哲': '內科', '翁志仁': '內科',
+  '葉步盛': '內科', '黃朝麟': '內科',
+};
+
 function loadMembers() {
-  // 優先讀取獨立儲存的成員資料（使用者修改過的）
+  let members = null;
+
+  // 優先讀取獨立儲存的成員資料
   try {
     const saved = localStorage.getItem(MEMBERS_KEY);
     if (saved) {
-      const members = JSON.parse(saved);
-      if (members.length > 0) return members;
+      const parsed = JSON.parse(saved);
+      if (parsed.length > 0) members = parsed;
     }
   } catch (e) { }
 
   // 舊版 DB 中可能有成員資料
-  try {
-    const saved = localStorage.getItem(DB_KEY);
-    if (saved) {
-      const oldDb = JSON.parse(saved);
-      if (oldDb.members && oldDb.members.length > 0) return oldDb.members;
-    }
-  } catch (e) { }
+  if (!members) {
+    try {
+      const saved = localStorage.getItem(DB_KEY);
+      if (saved) {
+        const oldDb = JSON.parse(saved);
+        if (oldDb.members && oldDb.members.length > 0) members = oldDb.members;
+      }
+    } catch (e) { }
+  }
 
   // 都沒有，用預設值
-  return [...getRealDoctors(), ...getRealNurses()];
+  if (!members) members = [...getRealDoctors(), ...getRealNurses()];
+
+  // 自動修正醫師專科（以 DOCTOR_SPECIALTY_MAP 為準）
+  members.forEach(m => {
+    if (DOCTOR_SPECIALTY_MAP[m.name] && m.specialty !== DOCTOR_SPECIALTY_MAP[m.name]) {
+      m.specialty = DOCTOR_SPECIALTY_MAP[m.name];
+    }
+  });
+
+  return members;
 }
 
 function saveMembers(members) {

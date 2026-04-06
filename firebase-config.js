@@ -199,7 +199,16 @@ async function loadCloudData() {
     const cloudData = await apiCall('GET', '/api/data');
     if (cloudData.cases && cloudData.cases.length > 0) {
       // 伺服器有資料，直接使用
-      db = { members: cloudData.members || [], cases: cloudData.cases || [],
+      const _members = cloudData.members || [];
+      // 自動修正醫師專科
+      if (typeof DOCTOR_SPECIALTY_MAP !== 'undefined') {
+        _members.forEach(m => {
+          if (DOCTOR_SPECIALTY_MAP[m.name] && m.specialty !== DOCTOR_SPECIALTY_MAP[m.name]) {
+            m.specialty = DOCTOR_SPECIALTY_MAP[m.name];
+          }
+        });
+      }
+      db = { members: _members, cases: cloudData.cases || [],
              opinions: cloudData.opinions || [], services: cloudData.services || [],
              billings: cloudData.billings || [], diseases: [] };
     } else {
