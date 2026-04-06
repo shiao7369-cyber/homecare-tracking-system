@@ -1063,56 +1063,68 @@ function renderOpinions() {
   const search = (document.getElementById('opinion-search')?.value || '').toLowerCase();
   const status = document.getElementById('opinion-filter-status')?.value || '';
   const now = new Date();
+  const todayStr = fmt(now);
 
-  // 更新狀態
-  db.opinions.forEach(op => {
-    const exp = new Date(op.expiryDate);
-    if (exp < now) op.status = 'expired';
-    else if (exp - now < 30 * 86400000) op.status = 'expiring';
-    else op.status = 'valid';
+  // 基於 doctorVisitDate 計算每個個案的意見書狀態
+  const activeCases = getActiveCases(db);
+  const caseOpStatus = activeCases.map(c => {
+    const op = getLatestOpinion(db, c.id);
+    const lastDate = c.doctorVisitDate || (op ? op.issueDate : '');
+    if (!lastDate) return { c, op, status: 'pending', lastDate: '', expiryDate: '', daysLeft: -1 };
+    const daysSince = daysBetween(lastDate, todayStr);
+    const expD = new Date(lastDate); expD.setMonth(expD.getMonth() + 6);
+    const expiryDate = expD.toISOString().slice(0, 10);
+    const daysLeft = daysBetween(todayStr, expiryDate);
+    let st = 'valid';
+    if (daysSince > 180) st = 'expired';
+    else if (daysSince >= 150) st = 'expiring';
+    return { c, op, status: st, lastDate, expiryDate, daysLeft };
   });
 
-  // Summary
-  const total = db.opinions.length;
-  const valid = db.opinions.filter(o => o.status === 'valid').length;
-  const expiring = db.opinions.filter(o => o.status === 'expiring').length;
-  const expired = db.opinions.filter(o => o.status === 'expired').length;
-  const pending = getActiveCases(db).filter(c => !getLatestOpinion(db, c.id)).length;
+  const valid = caseOpStatus.filter(x => x.status === 'valid').length;
+  const expiring = caseOpStatus.filter(x => x.status === 'expiring').length;
+  const expired = caseOpStatus.filter(x => x.status === 'expired').length;
+  const pending = caseOpStatus.filter(x => x.status === 'pending').length;
 
   document.getElementById('opinion-summary').innerHTML = `
-    <div class="summary-item"><div class="summary-value">${total}</div><div class="summary-label">總意見書數</div></div>
+    <div class="summary-item"><div class="summary-value">${activeCases.length}</div><div class="summary-label">總意見書數</div></div>
     <div class="summary-item"><div class="summary-value" style="color:var(--success)">${valid}</div><div class="summary-label">有效</div></div>
     <div class="summary-item"><div class="summary-value" style="color:var(--warning)">${expiring}</div><div class="summary-label">即將到期(30天內)</div></div>
     <div class="summary-item"><div class="summary-value" style="color:var(--danger)">${expired}</div><div class="summary-label">已過期</div></div>
     <div class="summary-item"><div class="summary-value" style="color:var(--gray-500)">${pending}</div><div class="summary-label">待開立</div></div>
   `;
 
-  let filtered = db.opinions.filter(op => {
-    if (status && op.status !== status) return false;
-    if (search) {
-      const c = findCase(db, op.caseId);
-      if (!c || !c.name.toLowerCase().includes(search)) return false;
-    }
+  let filtered = caseOpStatus.filter(x => {
+    if (status && x.status !== status) return false;
+    if (search && !x.c.name.toLowerCase().includes(search)) return false;
     return true;
-  }).sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+  }).sort((a, b) => {
+    // 逾期和待開立排前面
+    const order = { expired: 0, expiring: 1, pending: 2, valid: 3 };
+    if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+    return (a.expiryDate || '').localeCompare(b.expiryDate || '');
+  });
 
-  document.getElementById('opinion-tbody').innerHTML = filtered.map(op => {
-    const c = findCase(db, op.caseId);
-    const d = findMember(db, op.doctorId);
-    const daysLeft = daysBetween(fmt(now), op.expiryDate);
-    const rowClass = op.status === 'expired' ? 'row-danger' : (op.status === 'expiring' ? 'row-warning' : '');
+  document.getElementById('opinion-tbody').innerHTML = filtered.map(x => {
+    const c = x.c;
+    const rowClass = x.status === 'expired' ? 'row-danger' : (x.status === 'expiring' ? 'row-warning' : (x.status === 'pending' ? 'row-gray' : ''));
+    const statusBadge = x.status === 'expired' ? '<span class="badge badge-danger">逾期</span>'
+      : x.status === 'expiring' ? '<span class="badge badge-warning">待更新</span>'
+      : x.status === 'pending' ? '<span class="badge badge-gray">待開立</span>'
+      : '<span class="badge badge-success">有效</span>';
+    const daysText = x.status === 'pending' ? '-' : (x.daysLeft > 0 ? x.daysLeft + '天' : '已過期 ' + Math.abs(x.daysLeft) + '天');
     return `<tr class="${rowClass}">
-      <td>${c ? esc(c.name) : esc(op.caseId)}</td>
-      <td>${d ? esc(d.name) : '-'}</td>
-      <td>${op.issueDate}</td>
-      <td>第${op.sequence}次</td>
-      <td>${op.homeVisitDate}</td>
-      <td>${op.expiryDate}</td>
-      <td><strong>${daysLeft > 0 ? daysLeft + '天' : '已過期'}</strong></td>
-      <td>${op.diseaseStatus}</td>
-      <td>${op.yearCount}/2</td>
-      <td>${opinionStatusBadge(op.status)}</td>
-      <td><button class="btn btn-xs btn-primary" onclick="renewOpinion('${op.caseId}')">更新</button></td>
+      <td>${esc(c.name)}</td>
+      <td>${esc(c.doctorName || '-')}</td>
+      <td>${x.lastDate || '-'}</td>
+      <td>${x.op ? '第' + x.op.sequence + '次' : '-'}</td>
+      <td>${x.lastDate || '-'}</td>
+      <td>${x.expiryDate || '-'}</td>
+      <td><strong>${daysText}</strong></td>
+      <td>${x.op ? x.op.diseaseStatus : '-'}</td>
+      <td>-</td>
+      <td>${statusBadge}</td>
+      <td><button class="btn btn-xs btn-primary" onclick="renewOpinion('${c.id}')">更新</button></td>
     </tr>`;
   }).join('');
 }
