@@ -393,7 +393,7 @@ function renderCases() {
       <td><strong>${esc(c.name)}</strong></td>
       <td><small>${esc(c.category || '-')}</small></td>
       <td><span class="badge badge-primary">${c.cmsLevel || '-'}</span></td>
-      <td><small>${esc(c.district || '-')}</small></td>
+      <td><small>${esc(c.village || c.district || '-')}</small></td>
       <td>${doc ? esc(doc.name) : esc(c.doctorName || '-')}</td>
       <td>${opBadge}</td>
       <td>${phoneBadge}</td>
@@ -472,7 +472,7 @@ function openCaseModal(caseId) {
         <input class="form-input" id="f-case-address" value="${c ? esc(c.address) : ''}" style="width:100%">
       </div>
       <div class="form-group">
-        <label class="form-label">里別</label>
+        <label class="form-label">居住地里</label>
         <input class="form-input" id="f-case-district" value="${c ? esc(c.district||'') : ''}" style="width:100%">
       </div>
     </div>
@@ -597,7 +597,7 @@ function viewCase(caseId) {
           <tr><td style="padding:2px 8px;color:var(--gray-500)">收案日期</td><td>${c.enrollDate || '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">服務天數</td><td>${c.serviceDays || '-'} 天</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">地址</td><td>${esc(c.address)}</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">里別</td><td>${esc(c.district || '-')}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">居住地里</td><td>${esc(c.village || c.district || '-')}</td></tr>
         </table>
       </div>
       <div>
