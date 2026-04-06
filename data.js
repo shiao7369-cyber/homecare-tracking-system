@@ -23,7 +23,7 @@ function getRealDoctors() {
     { id:'D001', name:'李致有', role:'doctor', specialty:'小兒科', phone:'',
       acpTrained: true, acpTrainedDate:'2023-08-15', opinionTrained: true, opinionTrainedDate:'2023-07-20',
       joinDate:'2020-08-01', status:'active' },
-    { id:'D002', name:'徐子茜', role:'doctor', specialty:'家醫科', phone:'',
+    { id:'D002', name:'徐子茜', role:'doctor', specialty:'小兒科', phone:'',
       acpTrained: true, acpTrainedDate:'2023-09-10', opinionTrained: true, opinionTrainedDate:'2023-08-05',
       joinDate:'2020-08-01', status:'active' },
     { id:'D003', name:'蕭輝哲', role:'doctor', specialty:'家醫科', phone:'',
