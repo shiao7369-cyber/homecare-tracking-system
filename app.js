@@ -1889,22 +1889,33 @@ function processUploadFile(file) {
 }
 
 async function uploadLCMSFile(file) {
+  if (!authToken) {
+    showToast('請先登入再匯入檔案', 'danger');
+    return;
+  }
   const formData = new FormData();
   formData.append('file', file);
   try {
+    showToast('正在解析檔案...');
     const res = await fetch('/api/lcms-sync', {
       method: 'POST',
-      headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {},
+      headers: { 'Authorization': 'Bearer ' + authToken },
       body: formData
     });
     const data = await res.json();
+    if (res.status === 401) {
+      showToast('登入已過期，請重新登入', 'danger');
+      doLogout();
+      return;
+    }
     if (!res.ok) throw new Error(data.error || '上傳失敗');
 
+    console.log('[Upload] format:', data.format, 'cases:', data.total);
     const lcmsCases = data.cases;
     const diff = computeSmartDiff(lcmsCases);
     showSmartDiffModal(diff, lcmsCases);
   } catch (err) {
-    showToast('LCMS 檔案處理失敗: ' + err.message, 'danger');
+    showToast('檔案處理失敗: ' + err.message, 'danger');
   }
 }
 
