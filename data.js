@@ -396,7 +396,12 @@ function getNurses(db) { return db.members.filter(m => m.role === 'nurse'); }
 function getActiveCases(db) { return db.cases.filter(c => c.status === 'active'); }
 
 function getCaseCountByMember(db, memberId) {
-  return db.cases.filter(c => c.status === 'active' && (c.doctorId === memberId || c.nurseId === memberId)).length;
+  const member = db.members.find(m => m.id === memberId);
+  const memberName = member ? member.name : '';
+  return db.cases.filter(c => c.status === 'active' && (
+    c.doctorId === memberId || c.nurseId === memberId ||
+    (memberName && c.doctorName === memberName)
+  )).length;
 }
 
 function getServicesByCase(db, caseId) {

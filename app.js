@@ -328,7 +328,10 @@ function renderCases() {
     if (search && !c.name.toLowerCase().includes(search) && !c.idNumber.toLowerCase().includes(search) && !(c.id && c.id.toLowerCase().includes(search)) && !(c.district && c.district.includes(search)) && !(c.contactPerson && c.contactPerson.includes(search))) return false;
     if (status && c.status !== status) return false;
     if (level && c.cmsLevel !== parseInt(level)) return false;
-    if (doctor && c.doctorId !== doctor) return false;
+    if (doctor) {
+      const docMember = findMember(db, doctor);
+      if (c.doctorId !== doctor && !(docMember && c.doctorName === docMember.name)) return false;
+    }
     if (category && c.category !== category) return false;
     if (nurseFilter && c.nurseId !== nurseFilter) return false;
     return true;
