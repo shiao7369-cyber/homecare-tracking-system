@@ -1981,7 +1981,19 @@ async function uploadLCMSFile(file) {
           lcmsBillingCount: parseInt(row['申報紀錄數量(當年度)']) || 0,
           hospital: String(row['主責居家醫師院所'] || '').trim(),
           enrollDate: rocToAD(row['派案日期']),
-          homeVisitDates: String(row['家訪日期'] || '').trim(),
+          homeVisitDates: (() => {
+            const raw = String(row['家訪日期'] || '').trim();
+            if (!raw) return '';
+            return raw.split(',').map(d => rocToAD(d.trim())).filter(d => d).join(',');
+          })(),
+          doctorVisitDate: (() => {
+            const raw = String(row['家訪日期'] || '').trim();
+            if (!raw) return '';
+            const dates = raw.split(',').map(d => rocToAD(d.trim())).filter(d => d);
+            if (dates.length === 0) return '';
+            dates.sort();
+            return dates[dates.length - 1]; // 最後一次家訪日期
+          })(),
           status
         };
       }).filter(c => c.idNumber);
