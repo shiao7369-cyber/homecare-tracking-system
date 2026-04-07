@@ -5,9 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>居家失能個案家庭醫師照護方案 — 個案追蹤管理系統</title>
 <link rel="stylesheet" href="styles.css">
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
 
@@ -19,8 +16,8 @@
     <p class="login-subtitle">個案追蹤管理系統</p>
     <div id="login-error" class="login-error" style="display:none"></div>
     <div class="form-group">
-      <label class="form-label">Email</label>
-      <input type="email" class="form-input" id="login-email" placeholder="請輸入 Email" style="width:100%">
+      <label class="form-label">帳號</label>
+      <input type="text" class="form-input" id="login-username" placeholder="請輸入帳號" style="width:100%">
     </div>
     <div class="form-group">
       <label class="form-label">密碼</label>
@@ -28,8 +25,7 @@
         onkeydown="if(event.key==='Enter')doLogin()">
     </div>
     <button class="btn btn-primary" style="width:100%;margin-top:.5rem" onclick="doLogin()">登入</button>
-    <button class="btn btn-outline" style="width:100%;margin-top:.5rem" onclick="doRegister()">首次註冊</button>
-    <p class="login-hint">首次使用請先點「首次註冊」建立帳號</p>
+    <p class="login-hint">請使用管理員提供的帳號密碼登入</p>
   </div>
 </div>
 
@@ -74,6 +70,9 @@
     <a href="#" class="nav-item" data-page="reports">
       <span class="nav-icon">📈</span><span class="nav-label">報表匯出</span>
     </a>
+    <a href="#" class="nav-item" data-page="users" id="nav-users" style="display:none">
+      <span class="nav-icon">👥</span><span class="nav-label">使用者管理</span>
+    </a>
   </nav>
   <div class="sidebar-footer">
     <div class="user-info">
@@ -83,9 +82,16 @@
         <div class="user-role">系統管理員</div>
       </div>
     </div>
+    <button class="btn btn-sm btn-outline" onclick="showChangePasswordModal()" style="width:100%;margin-bottom:.5rem">🔑 修改密碼</button>
     <button class="logout-btn" onclick="doLogout()">登出系統</button>
   </div>
 </aside>
+
+<!-- ===== Session 閒置警告 ===== -->
+<div id="session-warning" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#FF9800;color:#fff;text-align:center;padding:.75rem;font-weight:600;">
+  ⚠ 您已閒置超過 25 分鐘，5 分鐘後將自動登出。
+  <button onclick="resetIdleTimer()" style="margin-left:1rem;padding:.25rem .75rem;border:1px solid #fff;background:transparent;color:#fff;border-radius:4px;cursor:pointer;font-weight:600;">延長登入</button>
+</div>
 
 <!-- ===== 主內容區 ===== -->
 <main id="main-content">
@@ -95,14 +101,15 @@
     <div class="top-bar-actions">
       <span class="today-date" id="today-date"></span>
       <button class="btn btn-sm btn-outline" onclick="exportData()">匯出資料</button>
-      <button class="btn btn-sm btn-primary" onclick="importData()">匯入資料</button>
+      <button class="btn btn-sm btn-primary" onclick="openUploadZone()">匯入資料</button>
+      <button class="btn btn-sm btn-outline" onclick="syncToCloud()" id="btn-sync-cloud" style="background:#4CAF50;color:#fff;border-color:#4CAF50;">☁ 同步到雲端</button>
     </div>
   </header>
 
   <!-- ====== Dashboard ====== -->
   <section id="page-dashboard" class="page active">
     <div class="stats-grid">
-      <div class="stat-card stat-primary">
+      <div class="stat-card stat-primary" style="cursor:pointer" onclick="switchPage('cases')">
         <div class="stat-icon">👥</div>
         <div class="stat-body">
           <div class="stat-value" id="stat-total-cases">0</div>
@@ -110,7 +117,7 @@
         </div>
         <div class="stat-trend up" id="trend-cases">+0 本月</div>
       </div>
-      <div class="stat-card stat-success">
+      <div class="stat-card stat-success" style="cursor:pointer" onclick="switchPage('members')">
         <div class="stat-icon">👨‍⚕️</div>
         <div class="stat-body">
           <div class="stat-value" id="stat-total-doctors">0</div>
@@ -118,15 +125,15 @@
         </div>
         <div class="stat-trend" id="trend-doctors">平均 0 案/醫師</div>
       </div>
-      <div class="stat-card stat-warning">
+      <div class="stat-card stat-warning" style="cursor:pointer" onclick="switchPage('opinion')">
         <div class="stat-icon">📄</div>
         <div class="stat-body">
           <div class="stat-value" id="stat-opinion-due">0</div>
           <div class="stat-label">意見書待更新</div>
         </div>
-        <div class="stat-trend warn">30天內到期</div>
+        <div class="stat-trend warn" id="trend-opinion">30天內到期</div>
       </div>
-      <div class="stat-card stat-danger">
+      <div class="stat-card stat-danger" style="cursor:pointer" onclick="switchPage('alerts')">
         <div class="stat-icon">⚠️</div>
         <div class="stat-body">
           <div class="stat-value" id="stat-alerts">0</div>
@@ -188,13 +195,23 @@
         </select>
         <select class="form-select" id="case-filter-level">
           <option value="">全部等級</option>
-          <option value="2">第2級</option><option value="3">第3級</option>
-          <option value="4">第4級</option><option value="5">第5級</option>
-          <option value="6">第6級</option><option value="7">第7級</option>
-          <option value="8">第8級</option>
+          <option value="2">CMS 2</option><option value="3">CMS 3</option>
+          <option value="4">CMS 4</option><option value="5">CMS 5</option>
+          <option value="6">CMS 6</option><option value="7">CMS 7</option>
+          <option value="8">CMS 8</option>
         </select>
         <select class="form-select" id="case-filter-doctor">
           <option value="">全部醫師</option>
+        </select>
+        <select class="form-select" id="case-filter-category">
+          <option value="">全部身分別</option>
+          <option value="第一類">第一類</option>
+          <option value="第二類">第二類</option>
+          <option value="第三類">第三類</option>
+          <option value="一般戶">一般戶</option>
+        </select>
+        <select class="form-select" id="case-filter-nurse">
+          <option value="">全部個管師</option>
         </select>
       </div>
       <div class="toolbar-right">
@@ -205,9 +222,9 @@
       <table class="data-table" id="cases-table">
         <thead>
           <tr>
-            <th>個案編號</th><th>姓名</th><th>年齡</th><th>CMS等級</th>
-            <th>負責醫師</th><th>個管師</th><th>意見書狀態</th>
-            <th>本月服務</th><th>狀態</th><th>操作</th>
+            <th>照管案號</th><th>姓名</th><th>身分別</th><th>CMS</th>
+            <th>居住地里</th><th>負責醫師</th><th>意見書</th>
+            <th>本月電訪</th><th>上次家訪</th><th>本月追蹤</th><th>狀態</th><th>操作</th>
           </tr>
         </thead>
         <tbody id="cases-tbody"></tbody>
@@ -448,6 +465,9 @@
       </div>
     </div>
   </section>
+  <!-- ====== Users Management ====== -->
+  <section id="page-users" class="page"></section>
+
 </main>
 
 <!-- ====== Modal ====== -->
@@ -462,10 +482,24 @@
   </div>
 </div>
 
-<div id="toast-container"></div>
-<input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImport(event)">
+<!-- ====== 拖拉上傳區 ====== -->
+<div id="upload-overlay" class="upload-overlay" style="display:none">
+  <div class="upload-zone" id="upload-zone">
+    <button class="upload-close" onclick="closeUploadZone()">&times;</button>
+    <div class="upload-icon">📂</div>
+    <h3>拖拉檔案至此，或點擊選擇檔案</h3>
+    <p class="upload-hint">支援格式：LCMS 個案清冊 (.xls / .xlsx)、系統備份 (.json)</p>
+    <p class="upload-hint">系統會自動判讀檔案類型，比對新增/異動/結案個案</p>
+    <input type="file" id="upload-file-input" accept=".json,.xls,.xlsx" style="display:none" onchange="handleUnifiedUpload(event)">
+    <button class="btn btn-primary" onclick="document.getElementById('upload-file-input').click()">選擇檔案</button>
+  </div>
+</div>
 
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="firebase-config.js"></script>
+<script src="cases-data.js"></script>
 <script src="data.js"></script>
 <script src="app.js"></script>
 </body>

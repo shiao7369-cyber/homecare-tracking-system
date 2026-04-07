@@ -1,54 +1,67 @@
 /* ========================================
-   Demo 資料與資料管理層
+   真實個案資料與資料管理層
+   (資料來源：115年居家失能個案家庭醫師-個案清冊)
    ======================================== */
 
 const DB_KEY = 'homecare_db';
+const DB_VERSION_KEY = 'homecare_db_version';
+const DB_VERSION = '2.1_doctor_update';
 
-// ===== 初始 Demo 資料 =====
-function generateDemoData() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
+// ===== 真實個案資料（由個案清冊匯入） =====
+// 此處為外部載入的 JSON，初次載入時由 loadRawCases() 提供
+let _rawCasesCache = null;
 
-  // --- 醫師 ---
-  const doctors = [
-    { id:'D001', name:'王大明', role:'doctor', specialty:'家醫科', phone:'0912-345-678',
+function loadRawCases() {
+  if (_rawCasesCache) return _rawCasesCache;
+  // 嵌入的真實資料將透過 cases-data.js 提供
+  return typeof RAW_CASES_DATA !== 'undefined' ? RAW_CASES_DATA : [];
+}
+
+// ===== 真實醫師資料 =====
+function getRealDoctors() {
+  return [
+    { id:'D001', name:'李致有', role:'doctor', specialty:'小兒科', phone:'',
       acpTrained: true, acpTrainedDate:'2023-08-15', opinionTrained: true, opinionTrainedDate:'2023-07-20',
-      joinDate:'2023-07-01', status:'active' },
-    { id:'D002', name:'李美玲', role:'doctor', specialty:'內科', phone:'0923-456-789',
+      joinDate:'2020-08-01', status:'active' },
+    { id:'D002', name:'徐子茜', role:'doctor', specialty:'小兒科', phone:'',
       acpTrained: true, acpTrainedDate:'2023-09-10', opinionTrained: true, opinionTrainedDate:'2023-08-05',
-      joinDate:'2023-07-15', status:'active' },
-    { id:'D003', name:'陳志偉', role:'doctor', specialty:'神經科', phone:'0934-567-890',
+      joinDate:'2020-08-01', status:'active' },
+    { id:'D003', name:'蕭輝哲', role:'doctor', specialty:'家醫科', phone:'',
       acpTrained: true, acpTrainedDate:'2023-10-01', opinionTrained: true, opinionTrainedDate:'2023-09-15',
-      joinDate:'2023-08-01', status:'active' },
-    { id:'D004', name:'張淑芬', role:'doctor', specialty:'家醫科', phone:'0945-678-901',
-      acpTrained: false, acpTrainedDate: null, opinionTrained: true, opinionTrainedDate:'2023-11-20',
-      joinDate:'2023-11-01', status:'active' },
-    { id:'D005', name:'林建宏', role:'doctor', specialty:'復健科', phone:'0956-789-012',
+      joinDate:'2020-08-01', status:'active' },
+    { id:'D004', name:'翁志仁', role:'doctor', specialty:'家醫科', phone:'',
+      acpTrained: true, acpTrainedDate:'2023-11-20', opinionTrained: true, opinionTrainedDate:'2023-11-20',
+      joinDate:'2020-08-01', status:'active' },
+    { id:'D005', name:'葉步盛', role:'doctor', specialty:'家醫科', phone:'',
       acpTrained: true, acpTrainedDate:'2024-01-10', opinionTrained: true, opinionTrainedDate:'2023-12-15',
-      joinDate:'2023-12-01', status:'active' },
+      joinDate:'2020-08-01', status:'active' },
+    { id:'D006', name:'黃朝麟', role:'doctor', specialty:'家醫科', phone:'',
+      acpTrained: true, acpTrainedDate:'2024-02-01', opinionTrained: true, opinionTrainedDate:'2024-01-15',
+      joinDate:'2020-08-01', status:'active' },
   ];
+}
 
-  // --- 個管師 ---
-  const nurses = [
-    { id:'N001', name:'黃雅琪', role:'nurse', specialty:'護理師', phone:'0911-111-222',
+// 醫師名稱→ID 對照
+const DOCTOR_NAME_MAP = {
+  '李致有': 'D001', '徐子茜': 'D002', '蕭輝哲': 'D003',
+  '翁志仁': 'D004', '葉步盛': 'D005', '黃朝麟': 'D006',
+};
+
+// ===== 個管師資料 =====
+function getRealNurses() {
+  return [
+    { id:'N001', name:'個管師A', role:'nurse', specialty:'護理師', phone:'',
       acpTrained: true, acpTrainedDate:'2023-08-20', opinionTrained: true, opinionTrainedDate: null,
-      joinDate:'2023-07-01', status:'active' },
-    { id:'N002', name:'吳佩珊', role:'nurse', specialty:'護理師', phone:'0922-222-333',
+      joinDate:'2020-08-01', status:'active' },
+    { id:'N002', name:'個管師B', role:'nurse', specialty:'護理師', phone:'',
       acpTrained: true, acpTrainedDate:'2023-09-15', opinionTrained: true, opinionTrainedDate: null,
-      joinDate:'2023-07-15', status:'active' },
-    { id:'N003', name:'周美惠', role:'nurse', specialty:'護理師', phone:'0933-333-444',
-      acpTrained: false, acpTrainedDate: null, opinionTrained: true, opinionTrainedDate: null,
-      joinDate:'2023-10-01', status:'active' },
-    { id:'N004', name:'鄭雅文', role:'nurse', specialty:'護理師', phone:'0944-444-555',
-      acpTrained: true, acpTrainedDate:'2024-01-05', opinionTrained: true, opinionTrainedDate: null,
-      joinDate:'2023-12-01', status:'active' },
+      joinDate:'2020-08-01', status:'active' },
   ];
+}
 
-  const members = [...doctors, ...nurses];
-
-  // --- 疾病代碼對照 ---
-  const diseases = [
+// ===== 疾病代碼對照 =====
+function getDiseases() {
+  return [
     { icd:'I10', name:'本態性高血壓' },
     { icd:'E11.9', name:'第二型糖尿病' },
     { icd:'E78.5', name:'高血脂症' },
@@ -65,190 +78,289 @@ function generateDemoData() {
     { icd:'H54.1', name:'低視力' },
     { icd:'I25.10', name:'慢性缺血性心臟病' },
   ];
+}
 
-  // --- 個案 ---
-  const lastNames = ['陳','林','黃','張','劉','王','蔡','楊','許','郭','吳','謝','鄭','曾','賴'];
-  const firstNamesM = ['進財','金發','文雄','正義','國興','清水','阿土','福來','萬福','天賜'];
-  const firstNamesF = ['秀英','美玉','麗華','月娥','桂花','金枝','玉蘭','阿珠','素梅','春嬌'];
-  const addresses = [
-    '台北市大安區和平東路一段100號','新北市板橋區中山路200號','台北市萬華區西園路三段50號',
-    '新北市中和區景安路88號','台北市信義區基隆路二段33號','新北市永和區永和路66號',
-    '台北市中正區南昌路一段25號','新北市新莊區中正路150號','台北市松山區南京東路五段77號',
-    '新北市三重區重新路四段22號','台北市文山區木柵路三段44號','新北市土城區金城路55號',
-    '台北市北投區中和街180號','新北市樹林區中華路120號','新北市蘆洲區長安街36號',
-    '台北市大同區民生西路200號','新北市汐止區大同路一段100號','台北市內湖區成功路四段88號',
-    '新北市淡水區中正東路65號','台北市士林區中山北路六段40號',
-  ];
-
+// ===== 將原始清冊資料轉換為系統個案格式 =====
+function convertRawCases(rawCases) {
   const cases = [];
-  for (let i = 0; i < 48; i++) {
-    const isFemale = Math.random() > 0.45;
-    const ln = lastNames[i % lastNames.length];
-    const fn = isFemale ? firstNamesF[i % firstNamesF.length] : firstNamesM[i % firstNamesM.length];
-    const age = 65 + Math.floor(Math.random() * 30);
-    const level = 2 + Math.floor(Math.random() * 7);
-    const dIdx = i % doctors.length;
-    const nIdx = i % nurses.length;
-    const enroll = new Date(y, m - Math.floor(Math.random() * 12) - 1, 1 + Math.floor(Math.random() * 28));
-    const isClosed = i >= 44;
+  const nurseIds = ['N001', 'N002'];
 
-    // 疾病
-    const numDx = 1 + Math.floor(Math.random() * 3);
-    const caseDx = [];
-    const used = new Set();
-    for (let d = 0; d < numDx; d++) {
-      let di;
-      do { di = Math.floor(Math.random() * diseases.length); } while (used.has(di));
-      used.add(di);
-      caseDx.push({ ...diseases[di], onset: ['<6m','6-12m','>1y'][Math.floor(Math.random()*3)] });
+  rawCases.forEach((raw, i) => {
+    const doctorId = DOCTOR_NAME_MAP[raw.doctorName] || 'D001';
+    const nurseId = nurseIds[i % nurseIds.length];
+
+    // 解析結案原因
+    let closeReason = null;
+    let closeDate = null;
+    if (raw.status === 'closed' && raw.closeInfo) {
+      closeDate = raw.doctorVisitDate || raw.firstReferralDate;
+      if (raw.closeInfo.includes('過世') || raw.closeInfo.includes('死亡') || raw.closeInfo.includes('往生')) {
+        closeReason = '死亡';
+      } else if (raw.closeInfo.includes('機構') || raw.closeInfo.includes('入住')) {
+        closeReason = '入住機構';
+      } else if (raw.closeInfo.includes('結案') || raw.closeInfo.includes('拒絕')) {
+        closeReason = '結案';
+      } else {
+        closeReason = '其他';
+      }
     }
 
-    const hasHypertension = caseDx.some(d => d.icd === 'I10') || Math.random() > 0.3;
-    const hasDiabetes = caseDx.some(d => d.icd.startsWith('E11'));
-    const hasHyperlipidemia = caseDx.some(d => d.icd.startsWith('E78'));
-
     cases.push({
-      id: 'C' + String(i+1).padStart(4,'0'),
-      name: ln + fn,
-      gender: isFemale ? 'F' : 'M',
-      age,
-      idNumber: (isFemale ? 'A2' : 'A1') + String(10000000 + Math.floor(Math.random()*89999999)),
-      phone: '02-' + String(20000000 + Math.floor(Math.random()*9999999)),
-      address: addresses[i % addresses.length],
-      cmsLevel: level,
-      doctorId: doctors[dIdx].id,
-      nurseId: nurses[nIdx].id,
-      enrollDate: fmt(enroll),
-      status: isClosed ? 'closed' : 'active',
-      closeReason: isClosed ? ['死亡','遷居','入住機構','拒絕訪視'][i%4] : null,
-      closeDate: isClosed ? fmt(new Date(y, m - 1, 15)) : null,
-      diagnoses: caseDx,
-      hasHypertension,
-      hasDiabetes,
-      hasHyperlipidemia,
-      diseaseStatus: ['穩定','不穩定','不明'][Math.floor(Math.random()*3)],
-      acpExplained: Math.random() > 0.4,
-      acpExplainedDate: Math.random() > 0.4 ? fmt(new Date(y, m - Math.floor(Math.random()*6), 10)) : null,
-      adExplained: Math.random() > 0.5,
-      adExplainedDate: Math.random() > 0.5 ? fmt(new Date(y, m - Math.floor(Math.random()*6), 15)) : null,
-      acpSigned: Math.random() > 0.7,
-      acpSignedDate: Math.random() > 0.7 ? fmt(new Date(y, m - Math.floor(Math.random()*4), 20)) : null,
-      nhiRegistered: Math.random() > 0.8,
-      familyAcpExplained: Math.random() > 0.6,
-      isRemoteArea: i >= 40 && i < 44,
-    });
-  }
-
-  // --- 醫師意見書 ---
-  const opinions = [];
-  const activeCases = cases.filter(c => c.status === 'active');
-  activeCases.forEach((c, idx) => {
-    const opDate = new Date(c.enrollDate);
-    opDate.setDate(opDate.getDate() + Math.floor(Math.random() * 12));
-    const expDate = new Date(opDate);
-    expDate.setMonth(expDate.getMonth() + 6);
-
-    opinions.push({
-      id: 'OP' + String(idx+1).padStart(4,'0'),
-      caseId: c.id,
-      doctorId: c.doctorId,
-      issueDate: fmt(opDate),
-      homeVisitDate: fmt(opDate),
-      expiryDate: fmt(expDate),
-      sequence: 1 + Math.floor(idx / activeCases.length * 2),
-      yearCount: 1,
-      diseaseStatus: c.diseaseStatus,
-      functionalPrognosis: ['退步','穩定','進步','無法確定'][Math.floor(Math.random()*4)],
-      status: expDate < now ? 'expired' : (expDate - now < 30*86400000 ? 'expiring' : 'valid'),
+      id: raw.caseNo || ('C' + String(i + 1).padStart(4, '0')),
+      seqNo: raw.seqNo,
+      name: raw.name,
+      gender: raw.gender,
+      age: null, // 清冊未提供年齡
+      idNumber: raw.idNumber,
+      phone: raw.phone,
+      address: raw.address,
+      cmsLevel: raw.cmsLevel,
+      category: raw.category || '',
+      district: raw.district || '',
+      contactPerson: raw.contactPerson || '',
+      doctorId,
+      doctorName: raw.doctorName,
+      nurseId,
+      enrollDate: raw.firstReferralDate,
+      firstReferralDate: raw.firstReferralDate,
+      nurseVisitDate: raw.nurseVisitDate,
+      doctorVisitDate: raw.doctorVisitDate,
+      serviceDays: raw.serviceDays,
+      monthlyTracking: raw.monthlyTracking || {},
+      scheduledVisit: raw.scheduledVisit || '',
+      closeInfo: raw.closeInfo || '',
+      status: raw.status || 'active',
+      closeReason,
+      closeDate,
+      notes: raw.notes || '',
+      diagnoses: [],
+      hasHypertension: false,
+      hasDiabetes: false,
+      hasHyperlipidemia: false,
+      diseaseStatus: '穩定',
+      acpExplained: false,
+      acpExplainedDate: null,
+      adExplained: false,
+      adExplainedDate: null,
+      acpSigned: false,
+      acpSignedDate: null,
+      nhiRegistered: false,
+      familyAcpExplained: false,
+      isRemoteArea: false,
     });
   });
 
-  // --- 服務紀錄 ---
+  return cases;
+}
+
+// ===== 從月度追蹤產生服務紀錄 =====
+function generateServicesFromTracking(cases) {
   const services = [];
   let sIdx = 0;
-  activeCases.forEach(c => {
-    const monthsActive = Math.max(1, Math.floor((now - new Date(c.enrollDate)) / (30*86400000)));
-    const totalRecords = Math.min(monthsActive, 6);
-    for (let mi = 0; mi < totalRecords; mi++) {
-      const sDate = new Date(y, m - totalRecords + mi + 1, 5 + Math.floor(Math.random()*20));
-      if (sDate > now) continue;
-      const types = ['home','phone','video'];
-      const type = mi === 0 ? 'home' : (mi % 4 === 0 ? 'home' : types[Math.floor(Math.random()*3)]);
-      const bpMeasured = type === 'home' || Math.random() > 0.3;
-      const hba1cMonitored = c.hasDiabetes && Math.random() > 0.3;
-      const lipidMonitored = c.hasHyperlipidemia && Math.random() > 0.4;
+  const year = 2026; // 115年 = 2026
+
+  cases.forEach(c => {
+    if (!c.monthlyTracking) return;
+
+    Object.entries(c.monthlyTracking).forEach(([monthStr, text]) => {
+      const month = parseInt(monthStr);
+      if (!text || month < 1 || month > 12) return;
+
+      // 解析日期與類型
+      let type = 'phone';
+      let day = 2;
+      const t = text.trim();
+
+      if (t === '結') return; // 結案標記，非服務紀錄
+
+      if (t.includes('家')) type = 'home';
+      else if (t.includes('電')) type = 'phone';
+      else if (t.includes('視')) type = 'video';
+      else if (t.includes('訪')) type = 'home';
+
+      // 解析日期 (e.g., "1/21家" → day=21)
+      const dateMatch = t.match(/(\d+)\/(\d+)/);
+      if (dateMatch) {
+        day = parseInt(dateMatch[2]) || 2;
+      }
+
+      // 只產生今天以前的紀錄
+      const sDate = new Date(year, month - 1, day);
+      if (sDate > new Date()) return;
 
       sIdx++;
       services.push({
-        id: 'S' + String(sIdx).padStart(5,'0'),
+        id: 'S' + String(sIdx).padStart(5, '0'),
         caseId: c.id,
         nurseId: c.nurseId,
         doctorId: c.doctorId,
         date: fmt(sDate),
         type,
-        respondent: Math.random() > 0.3 ? 'patient' : ['spouse','son','daughter','caregiver_foreign'][Math.floor(Math.random()*4)],
-        bpMeasured,
-        bpSystolic: bpMeasured ? 110 + Math.floor(Math.random()*50) : null,
-        bpDiastolic: bpMeasured ? 60 + Math.floor(Math.random()*30) : null,
-        hba1cMonitored,
-        hba1cValue: hba1cMonitored ? (5.5 + Math.random()*4).toFixed(1) : null,
-        lipidMonitored,
-        educationProvided: Math.random() > 0.2,
-        acpExplained: Math.random() > 0.7,
-        chronicDiseaseEval: Math.random() > 0.3,
-        referralLtc: Math.random() > 0.85,
-        referralMedical: Math.random() > 0.9,
+        respondent: 'patient',
+        bpMeasured: type === 'home',
+        bpSystolic: type === 'home' ? (120 + Math.floor(Math.random() * 30)) : null,
+        bpDiastolic: type === 'home' ? (70 + Math.floor(Math.random() * 20)) : null,
+        hba1cMonitored: false,
+        hba1cValue: null,
+        lipidMonitored: false,
+        educationProvided: type === 'home',
+        acpExplained: false,
+        chronicDiseaseEval: type === 'home',
+        referralLtc: false,
+        referralMedical: false,
         notes: '',
-        billingStatus: mi < totalRecords - 1 ? 'approved' : (Math.random() > 0.5 ? 'submitted' : 'pending'),
+        billingStatus: 'approved',
       });
-    }
+    });
   });
 
-  // --- 費用申報 ---
+  return services;
+}
+
+// ===== 從醫師家訪日期產生意見書 =====
+function generateOpinionsFromCases(cases) {
+  const opinions = [];
+  let opIdx = 0;
+  const now = new Date();
+
+  cases.forEach(c => {
+    if (!c.doctorVisitDate) return;
+
+    const opDate = new Date(c.doctorVisitDate);
+    const expDate = new Date(opDate);
+    expDate.setMonth(expDate.getMonth() + 6);
+
+    opIdx++;
+    let status;
+    if (expDate < now) status = 'expired';
+    else if (expDate - now < 30 * 86400000) status = 'expiring';
+    else status = 'valid';
+
+    opinions.push({
+      id: 'OP' + String(opIdx).padStart(4, '0'),
+      caseId: c.id,
+      doctorId: c.doctorId,
+      issueDate: c.doctorVisitDate,
+      homeVisitDate: c.doctorVisitDate,
+      expiryDate: fmt(expDate),
+      sequence: 1,
+      yearCount: 1,
+      diseaseStatus: c.diseaseStatus || '穩定',
+      functionalPrognosis: '穩定',
+      status,
+    });
+  });
+
+  return opinions;
+}
+
+// ===== 產生費用申報 =====
+function generateBillingRecords(cases, opinions, services) {
   const billings = [];
   let bIdx = 0;
 
   // 意見書費用 AA12
   opinions.forEach(op => {
     bIdx++;
-    const c = cases.find(x => x.id === op.caseId);
-    const isRemote = c && c.isRemoteArea;
     billings.push({
-      id: 'B' + String(bIdx).padStart(5,'0'),
+      id: 'B' + String(bIdx).padStart(5, '0'),
       caseId: op.caseId,
       code: 'AA12',
       serviceDate: op.issueDate,
-      billingMonth: op.issueDate.substring(0,7),
+      billingMonth: op.issueDate.substring(0, 7),
       memberId: op.doctorId,
-      amount: isRemote ? 1800 : 1500,
+      amount: 1500,
       status: op.status === 'expired' ? 'approved' : 'submitted',
     });
   });
 
-  // 個案管理費 YA01-YA04
+  // 個案管理費
   services.forEach(s => {
     bIdx++;
-    const c = cases.find(x => x.id === s.caseId);
-    const isRemote = c && c.isRemoteArea;
     let code, amount;
     if (s.type === 'home') {
-      code = isRemote ? 'YA04' : 'YA02';
-      amount = isRemote ? 1200 : 1000;
+      code = 'YA02'; amount = 1000;
     } else {
-      code = isRemote ? 'YA03' : 'YA01';
-      amount = isRemote ? 300 : 250;
+      code = 'YA01'; amount = 250;
     }
     billings.push({
-      id: 'B' + String(bIdx).padStart(5,'0'),
+      id: 'B' + String(bIdx).padStart(5, '0'),
       caseId: s.caseId,
       code,
       serviceDate: s.date,
-      billingMonth: s.date.substring(0,7),
+      billingMonth: s.date.substring(0, 7),
       memberId: s.nurseId,
       amount,
       status: s.billingStatus,
     });
   });
+
+  return billings;
+}
+
+// ===== 成員資料獨立儲存 =====
+const MEMBERS_KEY = 'homecare_members';
+
+// 醫師專科正確對照表（以此為準）
+const DOCTOR_SPECIALTY_MAP = {
+  '李致有': '小兒科', '徐子茜': '小兒科',
+  '蕭輝哲': '內科', '翁志仁': '內科',
+  '葉步盛': '內科', '黃朝麟': '內科',
+};
+
+function loadMembers() {
+  let members = null;
+
+  // 優先讀取獨立儲存的成員資料
+  try {
+    const saved = localStorage.getItem(MEMBERS_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed.length > 0) members = parsed;
+    }
+  } catch (e) { }
+
+  // 舊版 DB 中可能有成員資料
+  if (!members) {
+    try {
+      const saved = localStorage.getItem(DB_KEY);
+      if (saved) {
+        const oldDb = JSON.parse(saved);
+        if (oldDb.members && oldDb.members.length > 0) members = oldDb.members;
+      }
+    } catch (e) { }
+  }
+
+  // 都沒有，用預設值
+  if (!members) members = [...getRealDoctors(), ...getRealNurses()];
+
+  // 自動修正醫師專科（以 DOCTOR_SPECIALTY_MAP 為準）
+  members.forEach(m => {
+    if (DOCTOR_SPECIALTY_MAP[m.name] && m.specialty !== DOCTOR_SPECIALTY_MAP[m.name]) {
+      m.specialty = DOCTOR_SPECIALTY_MAP[m.name];
+    }
+  });
+
+  return members;
+}
+
+function saveMembers(members) {
+  localStorage.setItem(MEMBERS_KEY, JSON.stringify(members));
+}
+
+// ===== 產生完整資料庫 =====
+function generateDemoData() {
+  const rawCases = loadRawCases();
+  const members = loadMembers();
+  const diseases = getDiseases();
+
+  const cases = convertRawCases(rawCases);
+  const opinions = generateOpinionsFromCases(cases.filter(c => c.status === 'active'));
+  const services = generateServicesFromTracking(cases);
+  const billings = generateBillingRecords(cases, opinions, services);
+
+  // 同時備份成員資料到獨立 key
+  saveMembers(members);
 
   return { members, cases, opinions, services, billings, diseases };
 }
@@ -257,8 +369,8 @@ function generateDemoData() {
 function fmt(d) {
   if (typeof d === 'string') return d;
   const yy = d.getFullYear();
-  const mm = String(d.getMonth()+1).padStart(2,'0');
-  const dd = String(d.getDate()).padStart(2,'0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
   return `${yy}-${mm}-${dd}`;
 }
 
@@ -273,9 +385,14 @@ function monthsBetween(a, b) {
 
 // ===== 資料存取 =====
 function loadDB() {
+  const savedVersion = localStorage.getItem(DB_VERSION_KEY);
+  if (savedVersion !== DB_VERSION) {
+    localStorage.removeItem(DB_KEY);
+    localStorage.setItem(DB_VERSION_KEY, DB_VERSION);
+  }
   const raw = localStorage.getItem(DB_KEY);
   if (raw) {
-    try { return JSON.parse(raw); } catch(e) {}
+    try { return JSON.parse(raw); } catch (e) { }
   }
   const data = generateDemoData();
   saveDB(data);
@@ -299,15 +416,20 @@ function getNurses(db) { return db.members.filter(m => m.role === 'nurse'); }
 function getActiveCases(db) { return db.cases.filter(c => c.status === 'active'); }
 
 function getCaseCountByMember(db, memberId) {
-  return db.cases.filter(c => c.status === 'active' && (c.doctorId === memberId || c.nurseId === memberId)).length;
+  const member = db.members.find(m => m.id === memberId);
+  const memberName = member ? member.name : '';
+  return db.cases.filter(c => c.status === 'active' && (
+    c.doctorId === memberId || c.nurseId === memberId ||
+    (memberName && c.doctorName === memberName)
+  )).length;
 }
 
 function getServicesByCase(db, caseId) {
-  return db.services.filter(s => s.caseId === caseId).sort((a,b) => b.date.localeCompare(a.date));
+  return db.services.filter(s => s.caseId === caseId).sort((a, b) => b.date.localeCompare(a.date));
 }
 
 function getOpinionsByCase(db, caseId) {
-  return db.opinions.filter(o => o.caseId === caseId).sort((a,b) => b.issueDate.localeCompare(a.issueDate));
+  return db.opinions.filter(o => o.caseId === caseId).sort((a, b) => b.issueDate.localeCompare(a.issueDate));
 }
 
 function getLatestOpinion(db, caseId) {
@@ -316,11 +438,30 @@ function getLatestOpinion(db, caseId) {
 }
 
 function getServiceThisMonth(db, caseId) {
-  const ym = fmt(new Date()).substring(0,7);
+  const ym = fmt(new Date()).substring(0, 7);
   return db.services.filter(s => s.caseId === caseId && s.date.startsWith(ym));
 }
 
 function getHomeVisitsThisYear(db, caseId) {
   const yy = String(new Date().getFullYear());
   return db.services.filter(s => s.caseId === caseId && s.type === 'home' && s.date.startsWith(yy));
+}
+
+function getPhoneVisitsThisMonth(db, caseId) {
+  const ym = fmt(new Date()).substring(0, 7);
+  return db.services.filter(s => s.caseId === caseId && s.type === 'phone' && s.date.startsWith(ym));
+}
+
+function getLastNurseHomeVisit(db, caseId) {
+  return db.services
+    .filter(s => s.caseId === caseId && s.type === 'home' && s.nurseId)
+    .sort((a, b) => b.date.localeCompare(a.date))[0] || null;
+}
+
+function getOpinionExpiryInfo(db, caseId) {
+  const op = getLatestOpinion(db, caseId);
+  if (!op) return { opinion: null, daysLeft: -1, needsRenewal: true };
+  const expiry = new Date(op.expiryDate);
+  const daysLeft = Math.ceil((expiry - new Date()) / (1000 * 60 * 60 * 24));
+  return { opinion: op, daysLeft, needsRenewal: daysLeft <= 30 || op.status === 'expired' };
 }

@@ -1,60 +1,69 @@
 /* ========================================
-   Firebase 初始化與雲端資料層
+   認證與雲端資料層
+   - 登入/登出：自訂後台 API
+   - 資料同步：Firebase Firestore
    ======================================== */
 
-const firebaseConfig = {
-  apiKey: "AIzaSyA8-p3jb110_eML7tTwOhq09UouSDlR92o",
-  authDomain: "homecare-system-f37ea.firebaseapp.com",
-  projectId: "homecare-system-f37ea",
-  storageBucket: "homecare-system-f37ea.firebasestorage.app",
-  messagingSenderId: "501052920202",
-  appId: "1:501052920202:web:c838641f2bed35f81e7873"
-};
 
-firebase.initializeApp(firebaseConfig);
+// ===== Session 管理 =====
+let currentUser = null;
+let authToken = null;
 
-const auth = firebase.auth();
-const fsdb = firebase.firestore();
+// 安全讀取 token（檢查儲存時間，超過 8 小時自動清除）
+(function loadToken() {
+  const stored = sessionStorage.getItem('auth_token');
+  const storedAt = parseInt(sessionStorage.getItem('auth_token_time') || '0');
+  if (stored && (Date.now() - storedAt < 8 * 60 * 60 * 1000)) {
+    authToken = stored;
+  } else {
+    sessionStorage.removeItem('auth_token');
+    sessionStorage.removeItem('auth_token_time');
+    // 遷移舊 localStorage token
+    const old = localStorage.getItem('auth_token');
+    if (old) {
+      sessionStorage.removeItem('auth_token'); sessionStorage.removeItem('auth_token_time');
+    }
+  }
+})();
 
-// ===== 登入/註冊/登出 =====
-function doLogin() {
-  const email = document.getElementById('login-email').value.trim();
-  const pw = document.getElementById('login-password').value;
-  if (!email || !pw) { showLoginError('請輸入 Email 和密碼'); return; }
-
-  auth.signInWithEmailAndPassword(email, pw)
-    .then(() => { /* onAuthStateChanged 會處理 */ })
-    .catch(err => {
-      const msgs = {
-        'auth/user-not-found': '此帳號不存在，請先註冊',
-        'auth/wrong-password': '密碼錯誤',
-        'auth/invalid-email': 'Email 格式不正確',
-        'auth/invalid-credential': '帳號或密碼錯誤',
-      };
-      showLoginError(msgs[err.code] || err.message);
-    });
+async function apiCall(method, url, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '請求失敗');
+  return data;
 }
 
-function doRegister() {
-  const email = document.getElementById('login-email').value.trim();
+// ===== 登入/登出 =====
+async function doLogin() {
+  const username = document.getElementById('login-username').value.trim();
   const pw = document.getElementById('login-password').value;
-  if (!email || !pw) { showLoginError('請輸入 Email 和密碼'); return; }
-  if (pw.length < 6) { showLoginError('密碼至少需要 6 個字元'); return; }
+  if (!username || !pw) { showLoginError('請輸入帳號和密碼'); return; }
 
-  auth.createUserWithEmailAndPassword(email, pw)
-    .then(() => { /* onAuthStateChanged 會處理 */ })
-    .catch(err => {
-      const msgs = {
-        'auth/email-already-in-use': '此 Email 已註冊，請直接登入',
-        'auth/weak-password': '密碼強度不足，至少 6 個字元',
-        'auth/invalid-email': 'Email 格式不正確',
-      };
-      showLoginError(msgs[err.code] || err.message);
-    });
+  try {
+    const data = await apiCall('POST', '/api/login', { username, password: pw });
+    authToken = data.token;
+    currentUser = data.user;
+    sessionStorage.setItem('auth_token', authToken);
+    sessionStorage.setItem('auth_token_time', String(Date.now()));
+    onLoginSuccess(data);
+  } catch (err) {
+    showLoginError(err.message);
+  }
 }
 
 function doLogout() {
-  auth.signOut();
+  stopIdleDetection();
+  apiCall('POST', '/api/logout').catch(() => {});
+  authToken = null;
+  currentUser = null;
+  sessionStorage.removeItem('auth_token'); sessionStorage.removeItem('auth_token_time');
+  document.getElementById('login-page').style.display = 'flex';
+  document.getElementById('sidebar').style.display = 'none';
+  document.getElementById('main-content').style.display = 'none';
+  document.getElementById('login-password').value = '';
 }
 
 function showLoginError(msg) {
@@ -63,107 +72,814 @@ function showLoginError(msg) {
   el.style.display = 'block';
 }
 
-// ===== 監聽登入狀態 =====
-auth.onAuthStateChanged(user => {
-  if (user) {
-    // 已登入 → 隱藏登入頁，顯示主系統
-    document.getElementById('login-page').style.display = 'none';
-    document.getElementById('sidebar').style.display = 'flex';
-    document.getElementById('main-content').style.display = 'flex';
+// ===== 閒置偵測與 Session 過期警告 =====
+let _idleTimer = null;
+let _idleWarningTimer = null;
+let _sessionMaxAge = 8 * 60 * 60 * 1000;
+let _sessionIdleTimeout = 30 * 60 * 1000;
 
-    // 更新使用者資訊
-    const nameEl = document.querySelector('.user-name');
-    if (nameEl) nameEl.textContent = user.email.split('@')[0];
+function resetIdleTimer() {
+  clearTimeout(_idleTimer);
+  clearTimeout(_idleWarningTimer);
+  const warningEl = document.getElementById('session-warning');
+  if (warningEl) warningEl.style.display = 'none';
+  _idleWarningTimer = setTimeout(() => {
+    const w = document.getElementById('session-warning');
+    if (w) w.style.display = 'block';
+  }, _sessionIdleTimeout - 5 * 60 * 1000);
+  _idleTimer = setTimeout(() => {
+    if (authToken) { alert('已閒置超過 30 分鐘，系統將自動登出。'); doLogout(); }
+  }, _sessionIdleTimeout);
+}
 
-    // 載入雲端資料
-    loadCloudData().then(() => {
-      initNav();
-      initFilters();
-      renderDashboard();
-      updateAlertBadge();
-      document.getElementById('today-date').textContent = formatDateCN(new Date());
-    });
-  } else {
-    // 未登入 → 顯示登入頁
-    document.getElementById('login-page').style.display = 'flex';
-    document.getElementById('sidebar').style.display = 'none';
-    document.getElementById('main-content').style.display = 'none';
+function startIdleDetection() {
+  ['click', 'keydown', 'mousemove', 'scroll', 'touchstart'].forEach(evt => {
+    document.addEventListener(evt, resetIdleTimer, { passive: true });
+  });
+  resetIdleTimer();
+}
+
+function stopIdleDetection() {
+  clearTimeout(_idleTimer);
+  clearTimeout(_idleWarningTimer);
+  ['click', 'keydown', 'mousemove', 'scroll', 'touchstart'].forEach(evt => {
+    document.removeEventListener(evt, resetIdleTimer);
+  });
+}
+
+function onLoginSuccess(loginResponse) {
+  if (loginResponse) {
+    if (loginResponse.sessionMaxAge) _sessionMaxAge = loginResponse.sessionMaxAge;
+    if (loginResponse.sessionIdleTimeout) _sessionIdleTimeout = loginResponse.sessionIdleTimeout;
+  }
+  document.getElementById('login-page').style.display = 'none';
+  document.getElementById('sidebar').style.display = 'flex';
+  document.getElementById('main-content').style.display = 'flex';
+  document.getElementById('login-error').style.display = 'none';
+  const nameEl = document.querySelector('.user-name');
+  if (nameEl) nameEl.textContent = currentUser.displayName;
+  const roleEl = document.querySelector('.user-role');
+  if (roleEl) roleEl.textContent = currentUser.role === 'admin' ? '系統管理員' : '一般使用者';
+  const adminNav = document.getElementById('nav-users');
+  if (adminNav) adminNav.style.display = currentUser.role === 'admin' ? '' : 'none';
+  if (loginResponse && loginResponse.mustChangePassword) {
+    showForceChangePasswordModal();
+    return;
+  }
+  startIdleDetection();
+  loadCloudData().then(() => {
+    initNav(); initFilters(); renderDashboard(); updateAlertBadge();
+    document.getElementById('today-date').textContent = formatDateCN(new Date());
+  });
+}
+
+// ===== 強制更改密碼 =====
+function showForceChangePasswordModal() {
+  openModal('首次登入 — 請更改預設密碼', `
+    <p style="margin-bottom:1rem;color:var(--danger)">為確保帳號安全，首次登入必須更改密碼。</p>
+    <div class="form-group"><label class="form-label">目前密碼</label><input class="form-input" id="f-force-old-pw" type="password"></div>
+    <div class="form-group"><label class="form-label">新密碼（至少 8 字元，含英文和數字）</label><input class="form-input" id="f-force-new-pw" type="password"></div>
+    <div class="form-group"><label class="form-label">確認新密碼</label><input class="form-input" id="f-force-confirm-pw" type="password"></div>
+  `, `<button class="btn btn-primary" onclick="doForceChangePassword()">更改密碼</button>`);
+}
+
+async function doForceChangePassword() {
+  const oldPw = document.getElementById('f-force-old-pw').value;
+  const newPw = document.getElementById('f-force-new-pw').value;
+  const confirmPw = document.getElementById('f-force-confirm-pw').value;
+  if (!oldPw || !newPw) { alert('請填寫所有欄位'); return; }
+  if (newPw !== confirmPw) { alert('新密碼與確認密碼不一致'); return; }
+  if (newPw.length < 8 || !/[A-Za-z]/.test(newPw) || !/[0-9]/.test(newPw)) { alert('密碼須至少 8 字元且包含英文和數字'); return; }
+  try {
+    await apiCall('PUT', '/api/change-password', { oldPassword: oldPw, newPassword: newPw });
+    closeModal(); showToast('密碼已更改'); startIdleDetection();
+    loadCloudData().then(() => { initNav(); initFilters(); renderDashboard(); updateAlertBadge(); document.getElementById('today-date').textContent = formatDateCN(new Date()); });
+  } catch (err) { alert(err.message); }
+}
+
+// ===== 使用者自行修改密碼 =====
+function showChangePasswordModal() {
+  openModal('修改密碼', `
+    <div class="form-group"><label class="form-label">目前密碼</label><input class="form-input" id="f-chg-old-pw" type="password"></div>
+    <div class="form-group"><label class="form-label">新密碼（至少 8 字元，含英文和數字）</label><input class="form-input" id="f-chg-new-pw" type="password"></div>
+    <div class="form-group"><label class="form-label">確認新密碼</label><input class="form-input" id="f-chg-confirm-pw" type="password"></div>
+  `, `<button class="btn btn-outline" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="doChangeMyPassword()">儲存</button>`);
+}
+
+async function doChangeMyPassword() {
+  const oldPw = document.getElementById('f-chg-old-pw').value;
+  const newPw = document.getElementById('f-chg-new-pw').value;
+  const confirmPw = document.getElementById('f-chg-confirm-pw').value;
+  if (!oldPw || !newPw) { alert('請填寫所有欄位'); return; }
+  if (newPw !== confirmPw) { alert('新密碼與確認密碼不一致'); return; }
+  try {
+    await apiCall('PUT', '/api/change-password', { oldPassword: oldPw, newPassword: newPw });
+    closeModal(); showToast('密碼已更改成功');
+  } catch (err) { alert(err.message); }
+}
+
+// ===== 頁面載入時嘗試自動登入 =====
+document.addEventListener('DOMContentLoaded', async () => {
+  if (authToken) {
+    try {
+      currentUser = await apiCall('GET', '/api/me');
+      onLoginSuccess();
+    } catch (e) {
+      sessionStorage.removeItem('auth_token'); sessionStorage.removeItem('auth_token_time');
+      authToken = null;
+    }
   }
 });
 
-// ===== Firestore 雲端資料讀寫 =====
+// ===== 雲端資料讀寫 =====
 const COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
 
 async function loadCloudData() {
   try {
-    // 檢查雲端是否有資料
-    const metaDoc = await fsdb.collection('system').doc('meta').get();
-
-    if (!metaDoc.exists) {
-      // 首次使用：產生 demo 資料並上傳到雲端
-      console.log('首次使用，初始化雲端資料...');
-      db = generateDemoData();
-      await uploadAllData(db);
-      await fsdb.collection('system').doc('meta').set({
-        initialized: true,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
-      console.log('雲端資料初始化完成');
-    } else {
-      // 從雲端載入資料
-      console.log('從雲端載入資料...');
-      db = { members: [], cases: [], opinions: [], services: [], billings: [], diseases: [] };
-
-      for (const col of COLLECTIONS) {
-        const snapshot = await fsdb.collection(col).get();
-        db[col] = snapshot.docs.map(doc => ({ ...doc.data(), _docId: doc.id }));
+    const cloudData = await apiCall('GET', '/api/data');
+    if (cloudData.cases && cloudData.cases.length > 0) {
+      // 伺服器有資料，直接使用
+      const _members = cloudData.members || [];
+      // 自動修正醫師專科
+      if (typeof DOCTOR_SPECIALTY_MAP !== 'undefined') {
+        _members.forEach(m => {
+          if (DOCTOR_SPECIALTY_MAP[m.name] && m.specialty !== DOCTOR_SPECIALTY_MAP[m.name]) {
+            m.specialty = DOCTOR_SPECIALTY_MAP[m.name];
+          }
+        });
       }
-      console.log(`雲端資料載入完成: ${db.cases.length} 個案, ${db.members.length} 成員`);
+      db = { members: _members, cases: cloudData.cases || [],
+             opinions: cloudData.opinions || [], services: cloudData.services || [],
+             billings: cloudData.billings || [], diseases: [] };
+    } else {
+      // 伺服器無資料，嘗試從 localStorage 快取上傳
+      const cached = localStorage.getItem(DB_KEY);
+      if (cached) {
+        try {
+          db = JSON.parse(cached);
+          if (db.cases && db.cases.length > 0) {
+            console.log('伺服器無資料，從本地快取上傳...');
+            syncDataToBackend(db).catch(e => console.error('自動上傳失敗:', e));
+            return;
+          }
+        } catch (e) { /* 快取損壞 */ }
+      }
+      // 都沒有，產生初始資料
+      if (typeof RAW_CASES_DATA !== 'undefined' && RAW_CASES_DATA.length > 0) {
+        db = generateDemoData();
+        syncDataToBackend(db).catch(e => console.error('雲端同步失敗:', e));
+      } else {
+        db = generateDemoData();
+      }
     }
+    saveDB_local(db);
   } catch (err) {
-    console.error('雲端載入失敗，使用本地資料:', err);
-    db = loadDB();
-  }
-}
-
-async function uploadAllData(data) {
-  for (const col of COLLECTIONS) {
-    const items = data[col] || [];
-    const batch_size = 400; // Firestore batch limit is 500
-    for (let i = 0; i < items.length; i += batch_size) {
-      const batch = fsdb.batch();
-      const chunk = items.slice(i, i + batch_size);
-      chunk.forEach(item => {
-        const docRef = fsdb.collection(col).doc(item.id);
-        batch.set(docRef, item);
-      });
-      await batch.commit();
+    console.error('雲端載入失敗，使用本地快取:', err);
+    const cached = localStorage.getItem(DB_KEY);
+    if (cached) {
+      try { db = JSON.parse(cached); return; } catch (e) { /* 快取損壞 */ }
     }
+    db = generateDemoData(); saveDB_local(db);
   }
 }
 
-// ===== 覆寫 saveDB：同時存雲端 =====
-const _originalSaveDB = typeof saveDB === 'function' ? saveDB : null;
-
-function saveToCloud(collection, item) {
-  if (!item || !item.id) return;
-  fsdb.collection(collection).doc(item.id).set(item, { merge: true })
-    .catch(err => console.error('雲端儲存失敗:', err));
+async function syncDataToBackend(data) {
+  const payload = { dataVersion: DB_VERSION };
+  COLLECTIONS.forEach(col => { if (data[col]) payload[col] = data[col]; });
+  await apiCall('POST', '/api/data/sync', payload);
 }
 
-// 包裝 saveDB，存本地同時存雲端
+function saveDB_local(data) {
+  localStorage.setItem(DB_KEY, JSON.stringify(data));
+  localStorage.setItem(DB_VERSION_KEY, DB_VERSION);
+  if (data.members) saveMembers(data.members);
+}
+
+// saveDB - via backend API
+let _saveDebounceTimer = null;
 function saveDB(data) {
   localStorage.setItem(DB_KEY, JSON.stringify(data));
+  if (data.members) saveMembers(data.members);
+  clearTimeout(_saveDebounceTimer);
+  _saveDebounceTimer = setTimeout(() => {
+    COLLECTIONS.forEach(col => {
+      if (data[col]) {
+        data[col].forEach(item => {
+          if (item.id) {
+            apiCall('PUT', `/api/data/${col}/${item.id}`, item)
+              .catch(err => console.error(`同步 ${col}/${item.id} 失敗:`, err));
+          }
+        });
+      }
+    });
+  }, 500);
+}
 
-  // 差異同步到雲端（只更新有改動的資料）
-  COLLECTIONS.forEach(col => {
-    if (data[col]) {
-      data[col].forEach(item => {
-        if (item.id) {
-          fsdb.collection(col).doc(item.id).set(item, { merge: true })
-            .catch(err => console.error(`同步 ${col}/${item.id} 失敗:`, err));
-        }
+// ===== 手動同步到雲端 =====
+async function syncToCloud() {
+  const btn = document.getElementById('btn-sync-cloud');
+  if (!currentUser) { alert('請先登入再同步'); return; }
+  btn.disabled = true; btn.textContent = '☁ 同步中...';
+  try {
+    if (!db || !db.cases || db.cases.length === 0) { db = generateDemoData(); saveDB_local(db); }
+    await syncDataToBackend(db);
+    btn.textContent = '☁ 同步完成 ✓'; btn.style.background = '#2196F3';
+    alert(`雲端同步完成！\n${db.cases.length} 個案、${db.members.length} 成員、${db.services.length} 服務紀錄已上傳`);
+  } catch (err) {
+    console.error('同步失敗:', err);
+    btn.textContent = '☁ 同步失敗 ✗'; btn.style.background = '#f44336';
+    alert('同步失敗: ' + err.message);
+  } finally {
+    setTimeout(() => { btn.disabled = false; btn.textContent = '☁ 同步到雲端'; btn.style.background = '#4CAF50'; }, 3000);
+  }
+}
+
+// ===== 使用者管理 (管理員) =====
+async function renderUserManagement() {
+  const container = document.getElementById('page-users');
+  if (!container) return;
+  if (!currentUser || currentUser.role !== 'admin') {
+    container.innerHTML = '<p>無權限存取</p>';
+    return;
+  }
+
+  try {
+    const users = await apiCall('GET', '/api/users');
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h3>使用者管理</h3>
+          <button class="btn btn-sm btn-primary" onclick="openAddUserModal()">+ 新增使用者</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>帳號</th><th>顯示名稱</th><th>角色</th><th>狀態</th><th>建立時間</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${users.map(u => `
+              <tr>
+                <td><strong>${esc(u.username)}</strong></td>
+                <td>${esc(u.displayName)}</td>
+                <td><span class="badge ${u.role === 'admin' ? 'badge-danger' : 'badge-info'}">${u.role === 'admin' ? '管理員' : '使用者'}</span></td>
+                <td><span class="badge ${u.status === 'active' ? 'badge-success' : 'badge-warning'}">${u.status === 'active' ? '啟用' : '停用'}</span></td>
+                <td>${u.createdAt ? u.createdAt.substring(0, 10) : '-'}</td>
+                <td>
+                  <button class="btn btn-sm btn-outline" onclick="openEditUserModal('${esc(u.id)}','${esc(u.username)}','${esc(u.displayName)}','${esc(u.role)}','${esc(u.status)}')">編輯</button>
+                  ${u.username !== '蕭輝哲' ? `<button class="btn btn-sm btn-outline" style="color:red;border-color:red" onclick="deleteUser('${esc(u.id)}','${esc(u.username)}')">刪除</button>` : ''}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p style="color:red">載入失敗: ${esc(err.message)}</p>`;
+  }
+}
+
+function openAddUserModal() {
+  document.getElementById('modal-title').textContent = '新增使用者';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="form-group">
+      <label class="form-label">帳號 *</label>
+      <input class="form-input" id="f-new-username" placeholder="登入帳號">
+    </div>
+    <div class="form-group">
+      <label class="form-label">密碼 *</label>
+      <input class="form-input" id="f-new-password" type="password" placeholder="登入密碼">
+    </div>
+    <div class="form-group">
+      <label class="form-label">顯示名稱</label>
+      <input class="form-input" id="f-new-displayname" placeholder="側欄顯示的名稱">
+    </div>
+    <div class="form-group">
+      <label class="form-label">角色</label>
+      <select class="form-input" id="f-new-role">
+        <option value="user">一般使用者</option>
+        <option value="admin">管理員</option>
+      </select>
+    </div>
+  `;
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    <button class="btn btn-primary" onclick="addUser()">新增</button>
+  `;
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+async function addUser() {
+  const username = document.getElementById('f-new-username').value.trim();
+  const password = document.getElementById('f-new-password').value;
+  const displayName = document.getElementById('f-new-displayname').value.trim() || username;
+  const role = document.getElementById('f-new-role').value;
+
+  if (!username || !password) { alert('帳號和密碼為必填'); return; }
+
+  try {
+    await apiCall('POST', '/api/users', { username, password, displayName, role });
+    closeModal();
+    renderUserManagement();
+    showToast('使用者已新增');
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function openEditUserModal(id, username, displayName, role, status) {
+  document.getElementById('modal-title').textContent = '編輯使用者 - ' + username;
+  document.getElementById('modal-body').innerHTML = `
+    <input type="hidden" id="f-edit-id" value="${esc(id)}">
+    <div class="form-group">
+      <label class="form-label">帳號</label>
+      <input class="form-input" id="f-edit-username" value="${esc(username)}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">新密碼 (留空不修改，至少8字元含英數)</label>
+      <input class="form-input" id="f-edit-password" type="password" placeholder="不修改請留空">
+    </div>
+    <div class="form-group">
+      <label class="form-label">顯示名稱</label>
+      <input class="form-input" id="f-edit-displayname" value="${esc(displayName)}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">角色</label>
+      <select class="form-input" id="f-edit-role">
+        <option value="user" ${role === 'user' ? 'selected' : ''}>一般使用者</option>
+        <option value="admin" ${role === 'admin' ? 'selected' : ''}>管理員</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">狀態</label>
+      <select class="form-input" id="f-edit-status">
+        <option value="active" ${status === 'active' ? 'selected' : ''}>啟用</option>
+        <option value="disabled" ${status !== 'active' ? 'selected' : ''}>停用</option>
+      </select>
+    </div>
+  `;
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    <button class="btn btn-primary" onclick="updateUser()">儲存</button>
+  `;
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+async function updateUser() {
+  const id = document.getElementById('f-edit-id').value;
+  const body = {
+    username: document.getElementById('f-edit-username').value.trim(),
+    displayName: document.getElementById('f-edit-displayname').value.trim(),
+    role: document.getElementById('f-edit-role').value,
+    status: document.getElementById('f-edit-status').value,
+  };
+  const pw = document.getElementById('f-edit-password').value;
+  if (pw) body.password = pw;
+
+  try {
+    await apiCall('PUT', '/api/users/' + id, body);
+    closeModal();
+    renderUserManagement();
+    showToast('使用者已更新');
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function deleteUser(id, username) {
+  if (!confirm(`確定刪除使用者「${username}」？`)) return;
+  try {
+    await apiCall('DELETE', '/api/users/' + id);
+    renderUserManagement();
+    showToast('使用者已刪除');
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+/* ===== LCMS 功能已移至 app.js 的統一上傳 =====
+  // Create a hidden file input and trigger it
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.xls,.xlsx';
+  fileInput.style.display = 'none';
+  document.body.appendChild(fileInput);
+
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    document.body.removeChild(fileInput);
+    if (!file) return;
+
+    // Upload and parse
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/lcms-sync', {
+        method: 'POST',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {},
+        body: formData
       });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '上傳失敗');
+
+      // Compare with current db.cases
+      const lcmsCases = data.cases;
+      const diff = computeLCMSDiff(lcmsCases);
+      showLCMSDiffModal(diff, lcmsCases);
+    } catch (err) {
+      alert('LCMS 同步失敗: ' + err.message);
     }
   });
+
+  fileInput.click();
 }
+
+function computeLCMSDiff(lcmsCases) {
+  const systemCases = (db && db.cases) ? db.cases : [];
+
+  // Build lookup maps by idNumber (case-insensitive)
+  const systemMap = {};
+  systemCases.forEach(c => {
+    if (c.idNumber) systemMap[c.idNumber.toUpperCase()] = c;
+  });
+  const lcmsMap = {};
+  lcmsCases.forEach(c => {
+    if (c.idNumber) lcmsMap[c.idNumber.toUpperCase()] = c;
+  });
+
+  const newCases = [];      // In LCMS but not in system
+  const changed = [];       // In both but fields differ
+  const possiblyClosed = []; // In system (active) but not in LCMS
+
+  // Check LCMS cases against system
+  lcmsCases.forEach(lc => {
+    const key = lc.idNumber.toUpperCase();
+    const sc = systemMap[key];
+    if (!sc) {
+      newCases.push(lc);
+    } else {
+      // Compare fields
+      const diffs = [];
+      if (lc.cmsLevel != null && sc.cmsLevel != null && String(lc.cmsLevel) !== String(sc.cmsLevel)) {
+        diffs.push({ field: 'CMS等級', oldVal: sc.cmsLevel, newVal: lc.cmsLevel });
+      }
+      if (lc.category && sc.category && lc.category !== sc.category) {
+        diffs.push({ field: '福利身分', oldVal: sc.category, newVal: lc.category });
+      }
+      if (lc.district && sc.district && lc.district !== sc.district) {
+        diffs.push({ field: '行政區', oldVal: sc.district, newVal: lc.district });
+      }
+      if (lc.age != null && sc.age != null && String(lc.age) !== String(sc.age)) {
+        diffs.push({ field: '年齡', oldVal: sc.age, newVal: lc.age });
+      }
+      if (lc.caseNo && sc.caseNo && lc.caseNo !== sc.caseNo) {
+        diffs.push({ field: '案號', oldVal: sc.caseNo, newVal: lc.caseNo });
+      }
+      if (lc.enrollDate && sc.enrollDate && lc.enrollDate !== sc.enrollDate) {
+        diffs.push({ field: '派案日期', oldVal: sc.enrollDate, newVal: lc.enrollDate });
+      }
+      if (lc.careManager && lc.careManager !== (sc.careManager || '')) {
+        diffs.push({ field: '照管專員', oldVal: sc.careManager || '(空)', newVal: lc.careManager });
+      }
+      if (lc.village && lc.village !== (sc.village || '')) {
+        diffs.push({ field: '村里', oldVal: sc.village || '(空)', newVal: lc.village });
+      }
+      if (lc.unitName && lc.unitName !== (sc.unitName || '')) {
+        diffs.push({ field: 'A單位名稱', oldVal: sc.unitName || '(空)', newVal: lc.unitName });
+      }
+      // Always update LCMS-only fields if they have values
+      if (lc.lcmsOpinionCount != null && lc.lcmsOpinionCount !== (sc.lcmsOpinionCount || 0)) {
+        diffs.push({ field: '意見書數量(年度)', oldVal: sc.lcmsOpinionCount || 0, newVal: lc.lcmsOpinionCount });
+      }
+      if (lc.lcmsBillingCount != null && lc.lcmsBillingCount !== (sc.lcmsBillingCount || 0)) {
+        diffs.push({ field: '申報紀錄數量(年度)', oldVal: sc.lcmsBillingCount || 0, newVal: lc.lcmsBillingCount });
+      }
+      if (lc.homeVisitDates && lc.homeVisitDates !== (sc.homeVisitDates || '')) {
+        diffs.push({ field: '家訪日期', oldVal: sc.homeVisitDates || '(空)', newVal: lc.homeVisitDates });
+      }
+      if (diffs.length > 0) {
+        changed.push({ lcms: lc, system: sc, diffs: diffs });
+      }
+    }
+  });
+
+  // Check system cases not in LCMS (possibly closed)
+  systemCases.forEach(sc => {
+    if (sc.status !== 'active') return;
+    const key = (sc.idNumber || '').toUpperCase();
+    if (key && !lcmsMap[key]) {
+      possiblyClosed.push(sc);
+    }
+  });
+
+  return {
+    lcmsTotal: lcmsCases.length,
+    systemTotal: systemCases.filter(c => c.status === 'active').length,
+    newCases: newCases,
+    changed: changed,
+    possiblyClosed: possiblyClosed
+  };
+}
+
+function showLCMSDiffModal(diff, lcmsCases) {
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody = document.getElementById('modal-body');
+  const modalFooter = document.getElementById('modal-footer');
+
+  modalTitle.textContent = 'LCMS 同步報告';
+
+  // Build summary
+  let html = `
+    <div style="max-height:70vh;overflow-y:auto;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.75rem;margin-bottom:1rem;">
+        <div style="background:#e3f2fd;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#1565c0;">${diff.lcmsTotal}</div>
+          <div style="font-size:0.85rem;color:#555;">LCMS 個案數</div>
+        </div>
+        <div style="background:#f3e5f5;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#7b1fa2;">${diff.systemTotal}</div>
+          <div style="font-size:0.85rem;color:#555;">系統收案數</div>
+        </div>
+        <div style="background:#e8f5e9;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#2e7d32;">${diff.newCases.length}</div>
+          <div style="font-size:0.85rem;color:#555;">新個案</div>
+        </div>
+        <div style="background:#fff3e0;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#e65100;">${diff.changed.length}</div>
+          <div style="font-size:0.85rem;color:#555;">異動</div>
+        </div>
+        <div style="background:#fce4ec;padding:0.75rem;border-radius:8px;text-align:center;">
+          <div style="font-size:1.5rem;font-weight:bold;color:#c62828;">${diff.possiblyClosed.length}</div>
+          <div style="font-size:0.85rem;color:#555;">可能結案</div>
+        </div>
+      </div>
+  `;
+
+  // New cases section
+  if (diff.newCases.length > 0) {
+    html += `
+      <details open style="margin-bottom:1rem;">
+        <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#2e7d32;margin-bottom:0.5rem;">
+          新個案 (${diff.newCases.length})
+        </summary>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lcms-new-all" onchange="toggleLCMSCheckAll(this, 'lcms-new-chk')" checked></th>
+                <th>案號</th><th>姓名</th><th>身分證號</th><th>CMS</th><th>身分別</th><th>行政區</th><th>派案日期</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${diff.newCases.map((c, i) => `
+                <tr>
+                  <td><input type="checkbox" class="lcms-new-chk" data-idx="${i}" checked></td>
+                  <td>${esc(c.caseNo)}</td>
+                  <td>${esc(c.name)}</td>
+                  <td>${maskId(c.idNumber)}</td>
+                  <td>${c.cmsLevel || '-'}</td>
+                  <td>${esc(c.category || '-')}</td>
+                  <td>${esc(c.district || '-')}</td>
+                  <td>${esc(c.enrollDate || '-')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  // Changed cases section
+  if (diff.changed.length > 0) {
+    html += `
+      <details open style="margin-bottom:1rem;">
+        <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#e65100;margin-bottom:0.5rem;">
+          異動 (${diff.changed.length})
+        </summary>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lcms-chg-all" onchange="toggleLCMSCheckAll(this, 'lcms-chg-chk')" checked></th>
+                <th>姓名</th><th>身分證號</th><th>異動欄位</th><th>原值</th><th>新值</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${diff.changed.map((item, i) => item.diffs.map((d, j) => `
+                <tr>
+                  ${j === 0 ? `
+                    <td rowspan="${item.diffs.length}"><input type="checkbox" class="lcms-chg-chk" data-idx="${i}" checked></td>
+                    <td rowspan="${item.diffs.length}">${esc(item.lcms.name)}</td>
+                    <td rowspan="${item.diffs.length}">${maskId(item.lcms.idNumber)}</td>
+                  ` : ''}
+                  <td><span style="color:#e65100;font-weight:500;">${esc(d.field)}</span></td>
+                  <td style="color:#999;text-decoration:line-through;">${esc(d.oldVal)}</td>
+                  <td style="color:#2e7d32;font-weight:500;">${esc(d.newVal)}</td>
+                </tr>
+              `).join('')).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  // Possibly closed section
+  if (diff.possiblyClosed.length > 0) {
+    html += `
+      <details style="margin-bottom:1rem;">
+        <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#c62828;margin-bottom:0.5rem;">
+          可能結案 (${diff.possiblyClosed.length}) — 系統中收案但 LCMS 無資料
+        </summary>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lcms-close-all" onchange="toggleLCMSCheckAll(this, 'lcms-close-chk')"></th>
+                <th>姓名</th><th>身分證號</th><th>CMS</th><th>負責醫師</th><th>收案日期</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${diff.possiblyClosed.map((c, i) => `
+                <tr>
+                  <td><input type="checkbox" class="lcms-close-chk" data-idx="${i}"></td>
+                  <td>${esc(c.name || '-')}</td>
+                  <td>${maskId(c.idNumber)}</td>
+                  <td>${c.cmsLevel || '-'}</td>
+                  <td>${esc(c.doctorName || '-')}</td>
+                  <td>${esc(c.enrollDate || '-')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  if (diff.newCases.length === 0 && diff.changed.length === 0 && diff.possiblyClosed.length === 0) {
+    html += '<p style="text-align:center;color:#666;padding:2rem;">資料完全一致，無需同步。</p>';
+  }
+
+  html += '</div>';
+  modalBody.innerHTML = html;
+
+  // Store diff data for apply functions
+  window._lcmsDiff = diff;
+
+  const hasChanges = diff.newCases.length > 0 || diff.changed.length > 0 || diff.possiblyClosed.length > 0;
+  modalFooter.innerHTML = `
+    <button class="btn btn-outline" onclick="closeModal()">關閉</button>
+    ${hasChanges ? '<button class="btn btn-primary" onclick="applyLCMSSync()">套用勾選項目</button>' : ''}
+  `;
+
+  document.getElementById('modal-overlay').classList.add('active');
+
+  // Widen modal for diff view
+  const modal = document.getElementById('modal');
+  modal.style.maxWidth = '900px';
+  modal.style.width = '90vw';
+}
+
+function toggleLCMSCheckAll(masterCheckbox, className) {
+  const checkboxes = document.querySelectorAll('.' + className);
+  checkboxes.forEach(cb => { cb.checked = masterCheckbox.checked; });
+}
+
+function applyLCMSSync() {
+  const diff = window._lcmsDiff;
+  if (!diff) return;
+
+  let addedCount = 0;
+  let updatedCount = 0;
+  let closedCount = 0;
+
+  // Apply new cases
+  const newCheckboxes = document.querySelectorAll('.lcms-new-chk:checked');
+  newCheckboxes.forEach(cb => {
+    const idx = parseInt(cb.dataset.idx);
+    const lc = diff.newCases[idx];
+    if (!lc) return;
+
+    // Generate new case ID
+    const maxId = db.cases.reduce((max, c) => {
+      const num = parseInt((c.id || '').replace('C', ''));
+      return num > max ? num : max;
+    }, 0);
+    const newId = 'C' + String(maxId + 1 + addedCount).padStart(3, '0');
+
+    const newCase = {
+      id: newId,
+      caseNo: lc.caseNo || '',
+      name: lc.name,
+      idNumber: lc.idNumber,
+      gender: '',
+      cmsLevel: lc.cmsLevel,
+      category: lc.category || '',
+      district: lc.district || '',
+      village: lc.village || '',
+      address: '',
+      status: 'active',
+      doctorName: '',
+      enrollDate: lc.enrollDate || '',
+      age: lc.age,
+      careManager: lc.careManager || '',
+      unitName: lc.unitName || '',
+      lcmsOpinionCount: lc.lcmsOpinionCount || 0,
+      lcmsBillingCount: lc.lcmsBillingCount || 0,
+      homeVisitDates: lc.homeVisitDates || '',
+      // Default empty values for other standard fields
+      phone: '',
+      diagnosis: '',
+      notes: '',
+      opinionDate: '',
+      opinionExpiry: '',
+      acpStatus: 'not_started',
+      adStatus: 'not_started',
+      acpExplainDate: '',
+      adExplainDate: '',
+      acpSignDate: '',
+      nhiCardDate: '',
+      familyExplainDate: ''
+    };
+
+    db.cases.push(newCase);
+    addedCount++;
+  });
+
+  // Apply changes
+  const chgCheckboxes = document.querySelectorAll('.lcms-chg-chk:checked');
+  chgCheckboxes.forEach(cb => {
+    const idx = parseInt(cb.dataset.idx);
+    const item = diff.changed[idx];
+    if (!item) return;
+
+    const sc = db.cases.find(c => c.idNumber && c.idNumber.toUpperCase() === item.lcms.idNumber.toUpperCase());
+    if (!sc) return;
+
+    // Apply each field diff
+    item.diffs.forEach(d => {
+      switch (d.field) {
+        case 'CMS等級': sc.cmsLevel = item.lcms.cmsLevel; break;
+        case '福利身分': sc.category = item.lcms.category; break;
+        case '行政區': sc.district = item.lcms.district; break;
+        case '年齡': sc.age = item.lcms.age; break;
+        case '案號': sc.caseNo = item.lcms.caseNo; break;
+        case '派案日期': sc.enrollDate = item.lcms.enrollDate; break;
+        case '照管專員': sc.careManager = item.lcms.careManager; break;
+        case '村里': sc.village = item.lcms.village; break;
+        case 'A單位名稱': sc.unitName = item.lcms.unitName; break;
+        case '意見書數量(年度)': sc.lcmsOpinionCount = item.lcms.lcmsOpinionCount; break;
+        case '申報紀錄數量(年度)': sc.lcmsBillingCount = item.lcms.lcmsBillingCount; break;
+        case '家訪日期': sc.homeVisitDates = item.lcms.homeVisitDates; break;
+      }
+    });
+    updatedCount++;
+  });
+
+  // Apply closures
+  const closeCheckboxes = document.querySelectorAll('.lcms-close-chk:checked');
+  closeCheckboxes.forEach(cb => {
+    const idx = parseInt(cb.dataset.idx);
+    const sc = diff.possiblyClosed[idx];
+    if (!sc) return;
+
+    const target = db.cases.find(c => c.id === sc.id);
+    if (target) {
+      target.status = 'closed';
+      closedCount++;
+    }
+  });
+
+  // Save
+  if (addedCount > 0 || updatedCount > 0 || closedCount > 0) {
+    saveDB(db);
+  }
+
+  closeModal();
+
+  // Reset modal width
+  const modal = document.getElementById('modal');
+  modal.style.maxWidth = '';
+  modal.style.width = '';
+
+  // Show result
+  const msgs = [];
+  if (addedCount > 0) msgs.push(`新增 ${addedCount} 個案`);
+  if (updatedCount > 0) msgs.push(`更新 ${updatedCount} 個案`);
+  if (closedCount > 0) msgs.push(`結案 ${closedCount} 個案`);
+
+  if (msgs.length > 0) {
+    alert('LCMS 同步完成：\n' + msgs.join('\n'));
+    // Refresh UI
+    if (typeof renderDashboard === 'function') renderDashboard();
+    if (typeof renderCases === 'function') renderCases();
+    if (typeof updateAlertBadge === 'function') updateAlertBadge();
+  } else {
+    alert('未選取任何項目，未做變更。');
+  }
+}
+===== */
