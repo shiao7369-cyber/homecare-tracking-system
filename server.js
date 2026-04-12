@@ -321,7 +321,7 @@ app.post('/api/sso', async (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: '缺少 SSO token' });
 
-  const ssoSecret = process.env.SSO_SECRET;
+  const ssoSecret = process.env.SSO_SECRET?.trim();
   if (!ssoSecret) return res.status(500).json({ error: 'SSO 未設定' });
 
   try {
