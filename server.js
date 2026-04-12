@@ -791,8 +791,41 @@ app.get('/cases-data.js', (req, res) => {
   res.type('application/javascript').send('const RAW_CASES_DATA = [];');
 });
 
-// ===== 地理編碼代理（多 API Fallback：TGOS → Nominatim） =====
+// ===== 地理編碼代理（多 API Fallback + 行政區驗證） =====
 const geoHeaders = { 'User-Agent': 'HomecareTrackingSystem/1.0', 'Accept-Language': 'zh-TW' };
+
+// 桃園各行政區中心座標（用於驗證定位結果）
+const DISTRICT_CENTERS = {
+  '桃園區':[24.9936,121.3010],'中壢區':[24.9656,121.2249],'平鎮區':[24.9457,121.2183],
+  '八德區':[24.9527,121.2855],'楊梅區':[24.9077,121.1455],'蘆竹區':[25.0457,121.2920],
+  '龜山區':[25.0335,121.3457],'龍潭區':[24.8635,121.2165],'大溪區':[24.8833,121.2873],
+  '大園區':[25.0629,121.1975],'觀音區':[25.0335,121.0835],'新屋區':[24.9721,121.1062],
+  '復興區':[24.8208,121.3530]
+};
+
+// 驗證定位結果是否在正確行政區（容許半徑 ~5km）
+function validateGeoResult(data, expectedDist) {
+  if (!data || data.length === 0 || !expectedDist) return data;
+  const center = DISTRICT_CENTERS[expectedDist];
+  if (!center) return data; // 無法驗證的行政區，放行
+
+  const lat = parseFloat(data[0].lat);
+  const lon = parseFloat(data[0].lon);
+  if (isNaN(lat) || isNaN(lon)) return [];
+
+  // 計算與預期行政區中心的距離（度數，1度≈111km）
+  const dLat = lat - center[0];
+  const dLon = lon - center[1];
+  const distDeg = Math.sqrt(dLat * dLat + dLon * dLon);
+  const distKm = distDeg * 111;
+
+  // 行政區半徑約 5km，給寬容值到 8km
+  if (distKm > 8) {
+    console.log(`[Geocode] 驗證失敗: "${expectedDist}" 預期 [${center}]，結果 [${lat},${lon}]，距離 ${distKm.toFixed(1)}km — 拒絕`);
+    return []; // 回傳空，讓下一策略接手
+  }
+  return data;
+}
 
 // 清理地址（共用）
 function cleanGeoAddr(raw) {
@@ -805,12 +838,12 @@ function cleanGeoAddr(raw) {
   return addr.trim();
 }
 
-// API 1: TGOS 國土測繪中心（台灣地址最精準，免費）
+// API 1: TGOS 國土測繪中心（台灣地址最精準）
 async function tgosGeocode(addr) {
   try {
     const qs = new URLSearchParams({ fuzzyType: '2', queryAddr: addr, isLockCounty: 'N', isFullMatch: 'N' });
     const resp = await fetch(`https://addr.tgos.tw/addrws/v40/QueryAddr.asmx/QueryAddr?${qs}`, {
-      headers: { ...geoHeaders, 'Accept': 'application/json' }, timeout: 8000
+      headers: { ...geoHeaders, 'Accept': 'application/json' }, signal: AbortSignal.timeout(8000)
     });
     const json = await resp.json();
     if (json && json.AddressList && json.AddressList.length > 0) {
@@ -823,11 +856,45 @@ async function tgosGeocode(addr) {
   return [];
 }
 
-// API 2: Nominatim（OpenStreetMap，免費但較不精準）
+// API 2: NLSC 內政部地籍門牌（備用台灣定位）
+async function nlscGeocode(addr) {
+  try {
+    const qs = new URLSearchParams({ word: addr });
+    const resp = await fetch(`https://api.nlsc.gov.tw/other/TownVillagePointQuery/${encodeURIComponent(addr)}`, {
+      headers: geoHeaders, signal: AbortSignal.timeout(8000)
+    });
+    const text = await resp.text();
+    // NLSC 回傳 XML，解析 <coorX> <coorY>
+    const xMatch = text.match(/<coorX>([\d.]+)<\/coorX>/);
+    const yMatch = text.match(/<coorY>([\d.]+)<\/coorY>/);
+    if (xMatch && yMatch) {
+      return [{ lat: yMatch[1], lon: xMatch[1], display_name: addr, source: 'nlsc' }];
+    }
+  } catch (e) { /* NLSC 失敗 */ }
+  return [];
+}
+
+// API 3: Nominatim（OpenStreetMap）
 async function nominatimSearch(params) {
-  const qs = new URLSearchParams({ ...params, format: 'json', limit: '1', countrycodes: 'tw' });
+  const qs = new URLSearchParams({ ...params, format: 'json', limit: '3', countrycodes: 'tw' });
   const resp = await fetch(`https://nominatim.openstreetmap.org/search?${qs}`, { headers: geoHeaders });
   return resp.json();
+}
+
+// 從 Nominatim 多筆結果中挑選最佳的（最靠近預期行政區）
+function pickBestNominatim(results, expectedDist) {
+  if (!results || results.length === 0) return [];
+  if (!expectedDist || !DISTRICT_CENTERS[expectedDist]) return [results[0]];
+
+  const center = DISTRICT_CENTERS[expectedDist];
+  let best = null, bestDist = Infinity;
+  for (const r of results) {
+    const lat = parseFloat(r.lat), lon = parseFloat(r.lon);
+    if (isNaN(lat) || isNaN(lon)) continue;
+    const d = Math.sqrt((lat - center[0]) ** 2 + (lon - center[1]) ** 2);
+    if (d < bestDist) { bestDist = d; best = r; }
+  }
+  return best ? [best] : [results[0]];
 }
 
 app.get('/api/geocode', requireAuth, async (req, res) => {
@@ -844,36 +911,53 @@ app.get('/api/geocode', requireAuth, async (req, res) => {
     let data = [];
 
     // === 策略1: TGOS 門牌定位（最精準）===
-    data = await tgosGeocode(addr);
+    data = validateGeoResult(await tgosGeocode(addr), dist);
     if (data.length > 0) return res.json(data);
 
     // 簡化地址再試 TGOS（去巷弄號）
     if (streetMatch) {
       const simpleAddr = (city || '桃園市') + (dist || '') + streetMatch[1];
-      data = await tgosGeocode(simpleAddr);
+      data = validateGeoResult(await tgosGeocode(simpleAddr), dist);
       if (data.length > 0) return res.json(data);
     }
 
     // === 策略2: Nominatim 結構化查詢 ===
     if (streetMatch && city) {
-      data = await nominatimSearch({ street: streetMatch[1], city: city + (dist || '') });
+      const results = await nominatimSearch({ street: streetMatch[1], city: city + (dist || '') });
+      data = validateGeoResult(pickBestNominatim(results, dist), dist);
       if (data.length > 0) return res.json(data);
     }
 
-    // === 策略3: Nominatim 全文查詢 ===
-    data = await nominatimSearch({ q: addr });
-    if (data.length > 0) return res.json(data);
-
-    // === 策略4: 去掉號碼只用路街 ===
-    const roadOnly = addr.replace(/\d+巷.*/, '').replace(/\d+弄.*/, '').replace(/\d+號.*/, '').trim();
-    if (roadOnly.length > 4) {
-      data = await nominatimSearch({ q: roadOnly });
+    // === 策略3: Nominatim 全文查詢（取多筆選最佳）===
+    {
+      const results = await nominatimSearch({ q: addr });
+      data = validateGeoResult(pickBestNominatim(results, dist), dist);
       if (data.length > 0) return res.json(data);
     }
 
-    // === 策略5: 只用行政區（粗略定位）===
+    // === 策略4: 去掉巷弄號只用路街 ===
+    {
+      const roadOnly = addr.replace(/\d+巷.*/, '').replace(/\d+弄.*/, '').replace(/\d+號.*/, '').trim();
+      if (roadOnly.length > 4) {
+        const results = await nominatimSearch({ q: roadOnly });
+        data = validateGeoResult(pickBestNominatim(results, dist), dist);
+        if (data.length > 0) return res.json(data);
+      }
+    }
+
+    // === 策略5: 只用路名 + 行政區 ===
+    if (streetMatch && dist) {
+      const roadAddr = (city || '桃園市') + dist + streetMatch[1].replace(/\d+.*/, '');
+      const results = await nominatimSearch({ q: roadAddr });
+      data = validateGeoResult(pickBestNominatim(results, dist), dist);
+      if (data.length > 0) return res.json(data);
+    }
+
+    // === 策略6: 只用行政區（粗略定位，保底）===
     if (city && dist) {
       data = await nominatimSearch({ q: city + dist });
+      // 行政區查詢不驗證（本身就是粗略定位）
+      if (data.length > 0) return res.json(pickBestNominatim(data, dist));
     }
 
     res.json(data);
