@@ -3357,10 +3357,11 @@ function _renderRouteStops(visitCases, legData) {
       </div>`;
     }
 
+    const caseId = vc.case?.id || vc.visit.caseId || '';
     html += `<div class="route-stop-card" onclick="_zoomToStop(${i})">
       <div class="route-stop-num" style="background:${color}">${i + 1}</div>
       <div class="route-stop-detail">
-        <div class="route-stop-name">${esc(vc.name)}${vc.approx ? ' <span style="color:#d97706;font-size:0.75rem">⚠ 約略</span>' : ''}</div>
+        <div class="route-stop-name">${esc(vc.name)}${vc.approx ? ' <span class="approx-badge" onclick="event.stopPropagation();_geocodeRouteCase(\''+caseId+'\','+i+')">⚠ 約略 📍點此定位</span>' : ''}</div>
         <div class="route-stop-addr">${typeIcon} ${esc(vc.address)}</div>
         <div class="route-stop-doc">👨‍⚕️ ${doc ? esc(doc.name) : '-'} ・ ${vc.visit.duration||30}分鐘</div>
       </div>
@@ -3379,10 +3380,46 @@ function _zoomToStop(idx) {
   const vc = _visitRouteData.visitCases[idx];
   if (vc && caseMapInstance) {
     caseMapInstance.setView([vc.lat, vc.lng], 16);
-    // 打開對應 marker 的 popup
     if (caseMapMarkers[idx] && caseMapMarkers[idx].openPopup) {
       caseMapMarkers[idx].openPopup();
     }
+  }
+}
+
+// 單一個案地址定位（從路線面板觸發）
+async function _geocodeRouteCase(caseId, stopIdx) {
+  const c = findCase(db, caseId);
+  if (!c) { showToast('找不到個案', 'warning'); return; }
+  const addr = getCaseGeoAddress(c);
+  if (!addr || addr.length < 5) { showToast('個案地址不足，無法定位', 'warning'); return; }
+
+  showToast(`正在定位 ${c.name}...`, 'info');
+
+  const result = await geocodeAddress(addr);
+  if (result && result.lat && result.lng) {
+    // 存入 case 和 geocache
+    c.lat = result.lat;
+    c.lng = result.lng;
+    const geoCache = getGeoCache();
+    geoCache[addr] = [result.lat, result.lng];
+    setGeoCache(geoCache);
+    saveDB(db);
+
+    // 更新路線資料
+    if (_visitRouteData) {
+      const vc = _visitRouteData.visitCases[stopIdx];
+      if (vc) {
+        vc.lat = result.lat;
+        vc.lng = result.lng;
+        vc.approx = false;
+      }
+      // 重繪路線
+      clearMapLayers();
+      await _drawVisitRouteOnMap();
+    }
+    showToast(`${c.name} 定位成功`, 'success');
+  } else {
+    showToast(`${c.name} 定位失敗，請手動校正`, 'warning');
   }
 }
 
