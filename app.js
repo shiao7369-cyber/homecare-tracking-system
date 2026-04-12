@@ -1759,6 +1759,26 @@ function addCasePin(c) {
   caseMapMarkers.push(marker);
 }
 
+// 清理地址供地理編碼用
+function cleanAddressForGeo(addr) {
+  if (!addr) return '';
+  let s = addr;
+  // 全形數字轉半形
+  s = s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  // 全形英文轉半形
+  s = s.replace(/[Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  // 移除樓層資訊 (三樓、3樓、3F、之1 等)
+  s = s.replace(/[一二三四五六七八九十\d]+樓.*$/, '');
+  s = s.replace(/\d+[fF].*$/, '');
+  // 移除「里」名稱（如「莊敬里」），因為會干擾定位
+  s = s.replace(/([區鄉鎮市])[^\s路街道巷弄號]+里/, '$1');
+  // 移除「之N」
+  s = s.replace(/之\d+/, '');
+  // 移除「號」後面的內容（如「號三樓」「號之1」）
+  s = s.replace(/(號).*$/, '$1');
+  return s.trim();
+}
+
 // 地理編碼單一地址（透過 server proxy）
 async function geocodeAddress(addr) {
   try {
@@ -1770,14 +1790,23 @@ async function geocodeAddress(addr) {
   return null;
 }
 
-// 取得個案的最佳地址字串
+// 取得個案的最佳地址字串（原始，用於快取 key）
 function getCaseGeoAddress(c) {
   if (c.address) return c.address;
-  // 沒有完整地址時，用 縣市+行政區+村里 組合
   let addr = '桃園市';
   if (c.district) addr += c.district;
   if (c.village) addr += c.village;
   return addr.length > 3 ? addr : '';
+}
+
+// 清除定位快取，重新定位
+function resetGeocode() {
+  if (!confirm('確定要清除所有定位快取並重新定位？')) return;
+  localStorage.removeItem('geocache');
+  getActiveCases(db).forEach(c => { delete c.lat; delete c.lng; });
+  saveDB(db);
+  renderCaseMap();
+  showToast('已清除定位快取，請點「📍 地址定位」重新定位');
 }
 
 // 批次地理編碼
@@ -1811,31 +1840,33 @@ async function geocodeAllCases() {
   statusEl.textContent = `正在定位 0 / ${toGeocode.length} ...`;
 
   for (const c of toGeocode) {
-    const addr = getCaseGeoAddress(c);
-    let result = await geocodeAddress(addr);
+    const cacheKey = getCaseGeoAddress(c);
+    const cleanAddr = cleanAddressForGeo(cacheKey);
 
-    // 如果完整地址失敗，嘗試逐步簡化
+    // 第1次：清理後的完整地址
+    let result = await geocodeAddress(cleanAddr);
+
+    // 第2次：去掉巷弄號，只留路街+號
     if (!result && c.address) {
-      // 去掉巷弄號
-      const simplified = c.address.replace(/\d+巷.*/, '').replace(/\d+弄.*/, '').replace(/\d+號.*/, '').trim();
-      if (simplified !== c.address && simplified.length > 5) {
+      const noAlley = cleanAddr.replace(/\d+巷.*?(\d+號)/, '$1').replace(/\d+弄.*?(\d+號)/, '$1');
+      if (noAlley !== cleanAddr) {
         await new Promise(r => setTimeout(r, 1100));
-        result = await geocodeAddress(simplified);
+        result = await geocodeAddress(noAlley);
       }
-      // 再試只用路/街名
-      if (!result) {
-        const streetMatch = c.address.match(/(.*?[路街道])/);
-        if (streetMatch) {
-          const streetAddr = '桃園市' + (c.district || '') + streetMatch[1].replace(/.*[區鄉鎮市]/, '');
-          await new Promise(r => setTimeout(r, 1100));
-          result = await geocodeAddress(streetAddr);
-        }
+    }
+
+    // 第3次：只用路街名（不含號碼）
+    if (!result && c.address) {
+      const streetMatch = cleanAddr.match(/(.*?[路街道][一二三四五六七八九十\d]*段?)/);
+      if (streetMatch) {
+        await new Promise(r => setTimeout(r, 1100));
+        result = await geocodeAddress(streetMatch[1]);
       }
     }
 
     if (result) {
       c.lat = result.lat; c.lng = result.lng;
-      geoCache[addr] = [result.lat, result.lng];
+      geoCache[cacheKey] = [result.lat, result.lng];
       success++;
       // 即時在地圖上加入圖釘
       if (caseMapInstance) addCasePin(c);
