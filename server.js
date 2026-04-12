@@ -316,6 +316,49 @@ app.post('/api/login', loginLimiter, async (req, res) => {
   });
 });
 
+// SSO 單一登入（從 community-med 跳轉）
+app.post('/api/sso', async (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ error: '缺少 SSO token' });
+
+  const ssoSecret = process.env.SSO_SECRET;
+  if (!ssoSecret) return res.status(500).json({ error: 'SSO 未設定' });
+
+  try {
+    // Token format: base64url(JSON payload).signature
+    const [payloadB64, signature] = token.split('.');
+    if (!payloadB64 || !signature) return res.status(401).json({ error: 'Token 格式錯誤' });
+
+    // Verify HMAC signature
+    const expectedSig = crypto.createHmac('sha256', ssoSecret).update(payloadB64).digest('base64url');
+    if (signature !== expectedSig) return res.status(401).json({ error: 'Token 簽名無效' });
+
+    // Decode payload
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString());
+
+    // Check expiry (30 seconds)
+    if (Date.now() - payload.iat > 30000) return res.status(401).json({ error: 'Token 已過期' });
+
+    // Find user by username
+    const users = await loadUsers();
+    const user = users.find(u => u.username === payload.username && u.status === 'active');
+    if (!user) return res.status(401).json({ error: '使用者不存在' });
+
+    // Create session (same as login)
+    const sessionToken = createSession(user);
+    auditLog('SSO_LOGIN', user.id, { ip: req.ip, msg: `SSO from community-med: ${user.username}` });
+
+    res.json({
+      token: sessionToken,
+      user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role },
+      sessionMaxAge: SESSION_MAX_AGE,
+      sessionIdleTimeout: SESSION_IDLE_TIMEOUT
+    });
+  } catch (err) {
+    res.status(401).json({ error: 'Token 驗證失敗' });
+  }
+});
+
 // 登出
 app.post('/api/logout', (req, res) => {
   const token = req.headers['authorization']?.replace('Bearer ', '');

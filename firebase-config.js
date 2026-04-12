@@ -178,8 +178,36 @@ async function doChangeMyPassword() {
   } catch (err) { alert(err.message); }
 }
 
+// ===== SSO 單一登入（從 community-med 跳轉）=====
+async function handleSSO() {
+  const params = new URLSearchParams(window.location.search);
+  const ssoToken = params.get('sso');
+  if (!ssoToken) return false;
+
+  // 清除 URL 中的 sso 參數
+  const cleanUrl = window.location.pathname;
+  window.history.replaceState({}, '', cleanUrl);
+
+  try {
+    const data = await apiCall('POST', '/api/sso', { token: ssoToken });
+    authToken = data.token;
+    currentUser = data.user;
+    sessionStorage.setItem('auth_token', authToken);
+    sessionStorage.setItem('auth_token_time', String(Date.now()));
+    onLoginSuccess(data);
+    return true;
+  } catch (e) {
+    console.error('SSO 登入失敗:', e.message);
+    return false;
+  }
+}
+
 // ===== 頁面載入時嘗試自動登入 =====
 document.addEventListener('DOMContentLoaded', async () => {
+  // 先嘗試 SSO
+  if (await handleSSO()) return;
+
+  // 再嘗試已存在的 session
   if (authToken) {
     try {
       currentUser = await apiCall('GET', '/api/me');
