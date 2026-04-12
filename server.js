@@ -791,8 +791,39 @@ app.get('/cases-data.js', (req, res) => {
   res.type('application/javascript').send('const RAW_CASES_DATA = [];');
 });
 
-// 地理編碼代理（多策略查詢）
+// ===== 地理編碼代理（多 API Fallback：TGOS → Nominatim） =====
 const geoHeaders = { 'User-Agent': 'HomecareTrackingSystem/1.0', 'Accept-Language': 'zh-TW' };
+
+// 清理地址（共用）
+function cleanGeoAddr(raw) {
+  let addr = raw.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  addr = addr.replace(/[Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  addr = addr.replace(/[一二三四五六七八九十\d]+樓.*$/, '').replace(/\d+[fF].*$/, '');
+  addr = addr.replace(/之\d+/g, '').replace(/(號).*$/, '$1');
+  addr = addr.replace(/([區鄉鎮市])[\u4e00-\u9fff]{1,5}里(\d{1,3}鄰)?/g, '$1');
+  addr = addr.replace(/[\u4e00-\u9fff]{1,5}里(\d{1,3}鄰)?$/, '');
+  return addr.trim();
+}
+
+// API 1: TGOS 國土測繪中心（台灣地址最精準，免費）
+async function tgosGeocode(addr) {
+  try {
+    const qs = new URLSearchParams({ fuzzyType: '2', queryAddr: addr, isLockCounty: 'N', isFullMatch: 'N' });
+    const resp = await fetch(`https://addr.tgos.tw/addrws/v40/QueryAddr.asmx/QueryAddr?${qs}`, {
+      headers: { ...geoHeaders, 'Accept': 'application/json' }, timeout: 8000
+    });
+    const json = await resp.json();
+    if (json && json.AddressList && json.AddressList.length > 0) {
+      const item = json.AddressList[0];
+      if (item.X && item.Y) {
+        return [{ lat: String(item.Y), lon: String(item.X), display_name: item.FULL_ADDR || addr, source: 'tgos' }];
+      }
+    }
+  } catch (e) { /* TGOS 失敗，繼續下一個 */ }
+  return [];
+}
+
+// API 2: Nominatim（OpenStreetMap，免費但較不精準）
 async function nominatimSearch(params) {
   const qs = new URLSearchParams({ ...params, format: 'json', limit: '1', countrycodes: 'tw' });
   const resp = await fetch(`https://nominatim.openstreetmap.org/search?${qs}`, { headers: geoHeaders });
@@ -803,43 +834,62 @@ app.get('/api/geocode', requireAuth, async (req, res) => {
   const raw = req.query.q;
   if (!raw) return res.status(400).json({ error: '缺少地址參數' });
   try {
-    // 清理地址
-    let addr = raw.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
-    addr = addr.replace(/[一二三四五六七八九十\d]+樓.*$/, '').replace(/\d+[fF].*$/, '');
-    addr = addr.replace(/之\d+/g, '').replace(/(號).*$/, '$1');
-
-    // 解析地址結構
+    const addr = cleanGeoAddr(raw);
     const cityMatch = addr.match(/([\u4e00-\u9fff]+[市縣])/);
     const distMatch = addr.match(/[市縣]([\u4e00-\u9fff]+[區鄉鎮市])/);
-    const streetMatch = addr.match(/[區鄉鎮市里]([\u4e00-\u9fff]+[路街道大][\u4e00-\u9fff]*段?\d*[\u4e00-\u9fff]*)/);
-    // 去掉里名
-    const addrNoLi = addr.replace(/([區鄉鎮市])[^\s路街道]+里/, '$1');
+    const streetMatch = addr.match(/[區鄉鎮市]([\u4e00-\u9fff]+[路街道大][\u4e00-\u9fff]*段?\d*[\u4e00-\u9fff]*)/);
     const city = cityMatch ? cityMatch[1] : '';
     const dist = distMatch ? distMatch[1] : '';
 
     let data = [];
 
-    // 策略1: 結構化查詢（街道+城市+行政區）
+    // === 策略1: TGOS 門牌定位（最精準）===
+    data = await tgosGeocode(addr);
+    if (data.length > 0) return res.json(data);
+
+    // 簡化地址再試 TGOS（去巷弄號）
+    if (streetMatch) {
+      const simpleAddr = (city || '桃園市') + (dist || '') + streetMatch[1];
+      data = await tgosGeocode(simpleAddr);
+      if (data.length > 0) return res.json(data);
+    }
+
+    // === 策略2: Nominatim 結構化查詢 ===
     if (streetMatch && city) {
       data = await nominatimSearch({ street: streetMatch[1], city: city + (dist || '') });
+      if (data.length > 0) return res.json(data);
     }
 
-    // 策略2: 完整清理地址
-    if (data.length === 0) {
-      data = await nominatimSearch({ q: addrNoLi });
+    // === 策略3: Nominatim 全文查詢 ===
+    data = await nominatimSearch({ q: addr });
+    if (data.length > 0) return res.json(data);
+
+    // === 策略4: 去掉號碼只用路街 ===
+    const roadOnly = addr.replace(/\d+巷.*/, '').replace(/\d+弄.*/, '').replace(/\d+號.*/, '').trim();
+    if (roadOnly.length > 4) {
+      data = await nominatimSearch({ q: roadOnly });
+      if (data.length > 0) return res.json(data);
     }
 
-    // 策略3: 去掉號碼只用路街
-    if (data.length === 0) {
-      const roadOnly = addrNoLi.replace(/\d+巷.*/, '').replace(/\d+弄.*/, '').replace(/\d+號.*/, '').trim();
-      if (roadOnly.length > 4) data = await nominatimSearch({ q: roadOnly });
-    }
-
-    // 策略4: 只用行政區（粗略定位）
-    if (data.length === 0 && city && dist) {
+    // === 策略5: 只用行政區（粗略定位）===
+    if (city && dist) {
       data = await nominatimSearch({ q: city + dist });
     }
 
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// OSRM 路線規劃代理
+app.get('/api/route', requireAuth, async (req, res) => {
+  const { coords } = req.query; // "lng1,lat1;lng2,lat2;..."
+  if (!coords) return res.status(400).json({ error: '缺少座標參數' });
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=true`;
+    const resp = await fetch(url, { headers: geoHeaders });
+    const data = await resp.json();
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
