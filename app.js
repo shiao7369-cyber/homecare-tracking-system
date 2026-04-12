@@ -1700,7 +1700,7 @@ function renderCaseMap() {
 
     // 永久顯示姓名標籤
     marker.bindTooltip(label, {
-      permanent: true, direction: 'right', offset: [12, -20],
+      permanent: false, direction: 'right', offset: [12, -20],
       className: 'casemap-label'
     });
 
@@ -1769,7 +1769,7 @@ function addCasePin(c) {
   });
   const marker = L.marker([c.lat, c.lng], { icon: pinIcon, draggable: true }).addTo(caseMapInstance);
   marker.bindTooltip(label, {
-    permanent: true, direction: 'right', offset: [12, -20], className: 'casemap-label'
+    permanent: false, direction: 'right', offset: [12, -20], className: 'casemap-label'
   });
   marker.on('dragend', function() {
     const pos = marker.getLatLng();
