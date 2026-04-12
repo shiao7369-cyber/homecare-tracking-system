@@ -3078,9 +3078,21 @@ function _launchVisitRoute(dateStr, filterDoc) {
 
   if (dayVisits.length === 0) { showToast('該日無訪視排程', 'warning'); return; }
 
+  // 取得個案座標（優先用 case.lat/lng，其次查 geoCache）
+  const geoCache = getGeoCache();
   const visitCases = dayVisits.map(v => {
     const c = findCase(db, v.caseId);
-    return { visit: v, case: c, lat: c?.lat, lng: c?.lng, name: c?.name || v.caseName, address: c?.address || c?.district || '' };
+    let lat = c?.lat, lng = c?.lng;
+    // 如果 case 沒有座標，從 geocache 補
+    if ((!lat || !lng) && c) {
+      const cacheKey = getCaseGeoAddress(c);
+      if (cacheKey && geoCache[cacheKey]) {
+        lat = geoCache[cacheKey][0];
+        lng = geoCache[cacheKey][1];
+        c.lat = lat; c.lng = lng; // 回寫到 case
+      }
+    }
+    return { visit: v, case: c, lat, lng, name: c?.name || v.caseName, address: c?.address || c?.district || '' };
   });
 
   const withCoords = visitCases.filter(vc => vc.lat && vc.lng);
