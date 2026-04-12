@@ -52,7 +52,7 @@ function initNav() {
 const pageTitles = {
   dashboard: '主控儀表板', cases: '個案管理', members: '成員管理',
   services: '服務紀錄', opinion: '醫師意見書', billing: '費用申報',
-  kpi: 'KPI 績效監控', acp: 'ACP/AD 追蹤', alerts: '警示與待辦', reports: '報表匯出', users: '使用者管理'
+  casemap: '個案地圖', alerts: '警示與待辦', reports: '報表匯出', users: '使用者管理'
 };
 
 function switchPage(page) {
@@ -67,7 +67,7 @@ function switchPage(page) {
   const renderers = {
     dashboard: renderDashboard, cases: renderCases, members: renderMembers,
     services: renderServices, opinion: renderOpinions, billing: renderBilling,
-    kpi: renderKPI, acp: renderACP, alerts: renderAlerts, users: renderUserManagement
+    casemap: renderCaseMap, alerts: renderAlerts, users: renderUserManagement
   };
   if (renderers[page]) renderers[page]();
 }
@@ -77,7 +77,6 @@ function initFilters() {
   const debouncedCases = debounce(renderCases);
   const debouncedServices = debounce(renderServices);
   const debouncedOpinions = debounce(renderOpinions);
-  const debouncedACP = debounce(renderACP);
   const debouncedMembers = debounce(renderMembers);
   ['case-search'].forEach(id => {
     const el = document.getElementById(id);
@@ -107,21 +106,13 @@ function initFilters() {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', renderBilling);
   });
-  ['acp-search'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('input', debouncedACP);
-  });
-  ['acp-filter'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('change', renderACP);
-  });
   ['member-search'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', debouncedMembers);
   });
-  ['kpi-year','kpi-filter-doctor'].forEach(id => {
+  ['casemap-filter-doctor','casemap-filter-district','casemap-filter-cms'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('change', renderKPI);
+    if (el) el.addEventListener('change', renderCaseMap);
   });
 }
 
@@ -1559,8 +1550,128 @@ function exportBillingSummary() {
 }
 
 // ==========================================
-//  KPI 績效
+//  個案地圖
 // ==========================================
+let caseMapInstance = null;
+const DISTRICT_COORDS = {
+  '桃園區':[24.9936,121.3010],'中壢區':[24.9656,121.2249],'平鎮區':[24.9457,121.2183],
+  '八德區':[24.9527,121.2855],'楊梅區':[24.9077,121.1455],'蘆竹區':[25.0457,121.2920],
+  '龜山區':[25.0335,121.3457],'龍潭區':[24.8635,121.2165],'大溪區':[24.8833,121.2873],
+  '大園區':[25.0629,121.1975],'觀音區':[25.0335,121.0835],'新屋區':[24.9721,121.1062],
+  '復興區':[24.8208,121.3530]
+};
+
+function renderCaseMap() {
+  const active = getActiveCases(db);
+  // 填充篩選器
+  const doctorSel = document.getElementById('casemap-filter-doctor');
+  const districtSel = document.getElementById('casemap-filter-district');
+  const cmsSel = document.getElementById('casemap-filter-cms');
+  if (doctorSel && doctorSel.options.length <= 1) {
+    const doctors = getDoctors(db).filter(d => d.status === 'active');
+    doctors.forEach(d => { doctorSel.add(new Option(d.name, d.id)); });
+  }
+  if (districtSel && districtSel.options.length <= 1) {
+    const districts = [...new Set(active.map(c => c.district).filter(Boolean))].sort();
+    districts.forEach(d => { districtSel.add(new Option(d, d)); });
+  }
+  if (cmsSel && cmsSel.options.length <= 1) {
+    for (let i = 1; i <= 8; i++) cmsSel.add(new Option(`第${i}級`, `第${i}級`));
+  }
+
+  const filterDoctor = doctorSel?.value || '';
+  const filterDistrict = districtSel?.value || '';
+  const filterCms = cmsSel?.value || '';
+
+  let filtered = active.filter(c => {
+    if (filterDoctor && c.doctorId !== filterDoctor) return false;
+    if (filterDistrict && c.district !== filterDistrict) return false;
+    if (filterCms && c.cmsLevel !== filterCms) return false;
+    return true;
+  });
+
+  document.getElementById('casemap-count').textContent = `顯示 ${filtered.length} / ${active.length} 個案`;
+
+  const container = document.getElementById('casemap-container');
+  if (!container) return;
+
+  if (!caseMapInstance) {
+    caseMapInstance = L.map(container).setView([24.99, 121.25], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap',
+      maxZoom: 18
+    }).addTo(caseMapInstance);
+    // 修正 Leaflet resize issue
+    setTimeout(() => caseMapInstance.invalidateSize(), 200);
+  }
+
+  // 清除舊 markers
+  caseMapInstance.eachLayer(l => { if (l instanceof L.Marker || l instanceof L.CircleMarker) caseMapInstance.removeLayer(l); });
+
+  // CMS 等級顏色
+  const cmsColors = {
+    '第1級':'#4CAF50','第2級':'#8BC34A','第3級':'#CDDC39','第4級':'#FFC107',
+    '第5級':'#FF9800','第6級':'#FF5722','第7級':'#E91E63','第8級':'#9C27B0'
+  };
+
+  // 依行政區分群
+  const districtGroups = {};
+  filtered.forEach(c => {
+    const dist = c.district || '未知';
+    if (!districtGroups[dist]) districtGroups[dist] = [];
+    districtGroups[dist].push(c);
+  });
+
+  Object.entries(districtGroups).forEach(([dist, cases]) => {
+    const baseCoord = DISTRICT_COORDS[dist];
+    if (!baseCoord) return;
+    cases.forEach((c, idx) => {
+      // 散布個案位置，避免重疊
+      const angle = (idx / cases.length) * 2 * Math.PI;
+      const spread = Math.min(cases.length * 0.0003, 0.008);
+      const r = spread * Math.sqrt(Math.random());
+      const lat = baseCoord[0] + r * Math.cos(angle + Math.random() * 0.5);
+      const lng = baseCoord[1] + r * Math.sin(angle + Math.random() * 0.5);
+
+      const color = cmsColors[c.cmsLevel] || '#999';
+      const doctor = findMember(db, c.doctorId);
+      const marker = L.circleMarker([lat, lng], {
+        radius: 7, fillColor: color, color: '#fff', weight: 1.5,
+        fillOpacity: 0.85
+      }).addTo(caseMapInstance);
+
+      marker.bindPopup(`
+        <div style="min-width:180px">
+          <strong style="font-size:1.05rem">${esc(c.name)}</strong>
+          <span style="background:${color};color:#fff;padding:1px 6px;border-radius:4px;font-size:0.75rem;margin-left:4px">${c.cmsLevel || '-'}</span>
+          <br><span style="color:#666">📍 ${esc(c.district || '-')} ${esc(c.village || '')}</span>
+          <br><span style="color:#666">👨‍⚕️ ${doctor ? esc(doctor.name) : (c.doctorName || '-')}</span>
+          <br><span style="color:#666">📅 收案 ${c.enrollDate || '-'}</span>
+          ${c.address ? `<br><span style="color:#888;font-size:0.8rem">🏠 ${esc(c.address)}</span>` : ''}
+        </div>
+      `);
+    });
+  });
+
+  // 加圖例
+  if (!caseMapInstance._legendAdded) {
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = function() {
+      const div = L.DomUtil.create('div', 'leaflet-control');
+      div.style.cssText = 'background:#fff;padding:8px 12px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.2);font-size:0.8rem;line-height:1.6';
+      div.innerHTML = '<strong>CMS 等級</strong><br>' +
+        Object.entries(cmsColors).map(([k,v]) =>
+          `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${v};margin-right:4px;vertical-align:middle"></span>${k}`
+        ).join('<br>');
+      return div;
+    };
+    legend.addTo(caseMapInstance);
+    caseMapInstance._legendAdded = true;
+  }
+
+  setTimeout(() => caseMapInstance.invalidateSize(), 300);
+}
+
 function computeKPI(doctorFilter) {
   const active = getActiveCases(db).filter(c => {
     if (!doctorFilter) return true;

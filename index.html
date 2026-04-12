@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>居家失能個案家庭醫師照護方案 — 個案追蹤管理系統</title>
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 </head>
 <body>
 
@@ -57,11 +58,8 @@
     <a href="#" class="nav-item" data-page="billing">
       <span class="nav-icon">💰</span><span class="nav-label">費用申報</span>
     </a>
-    <a href="#" class="nav-item" data-page="kpi">
-      <span class="nav-icon">🎯</span><span class="nav-label">KPI 績效監控</span>
-    </a>
-    <a href="#" class="nav-item" data-page="acp">
-      <span class="nav-icon">📝</span><span class="nav-label">ACP/AD 追蹤</span>
+    <a href="#" class="nav-item" data-page="casemap">
+      <span class="nav-icon">🗺️</span><span class="nav-label">個案地圖</span>
     </a>
     <a href="#" class="nav-item" data-page="alerts">
       <span class="nav-icon">🔔</span><span class="nav-label">警示與待辦</span>
@@ -368,63 +366,25 @@
     <div class="billing-total" id="billing-total"></div>
   </section>
 
-  <!-- ====== KPI 績效 ====== -->
-  <section id="page-kpi" class="page">
+  <!-- ====== 個案地圖 ====== -->
+  <section id="page-casemap" class="page">
     <div class="page-toolbar">
       <div class="toolbar-left">
-        <select class="form-select" id="kpi-year">
-          <option value="2024">113年度</option>
-          <option value="2023" selected>112年度</option>
+        <select class="form-select" id="casemap-filter-doctor">
+          <option value="">全部醫師</option>
         </select>
-        <select class="form-select" id="kpi-filter-doctor">
-          <option value="">全院彙總</option>
+        <select class="form-select" id="casemap-filter-district">
+          <option value="">全部行政區</option>
         </select>
-      </div>
-    </div>
-    <div class="kpi-grid" id="kpi-detail-grid"></div>
-    <div class="card" style="margin-top:1.5rem">
-      <div class="card-header"><h3>各醫師 KPI 達成明細</h3></div>
-      <div class="card-body">
-        <table class="data-table" id="kpi-doctor-table">
-          <thead>
-            <tr>
-              <th>醫師</th><th>收案數</th><th>血壓測量率</th><th>血糖監測率</th>
-              <th>血脂監測率</th><th>ACP訓練</th><th>ACP/AD完成率</th><th>綜合達標</th>
-            </tr>
-          </thead>
-          <tbody id="kpi-doctor-tbody"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
-  <!-- ====== ACP/AD ====== -->
-  <section id="page-acp" class="page">
-    <div class="acp-summary" id="acp-summary"></div>
-    <div class="page-toolbar">
-      <div class="toolbar-left">
-        <input type="text" class="form-input search-input" id="acp-search" placeholder="搜尋個案姓名...">
-        <select class="form-select" id="acp-filter">
-          <option value="">全部狀態</option>
-          <option value="not_started">未說明</option>
-          <option value="explained">已說明</option>
-          <option value="signed">已簽署</option>
-          <option value="registered">已健保卡註記</option>
+        <select class="form-select" id="casemap-filter-cms">
+          <option value="">全部CMS等級</option>
         </select>
       </div>
+      <div class="toolbar-right">
+        <span id="casemap-count" style="font-size:0.9rem;color:#666;"></span>
+      </div>
     </div>
-    <div class="table-container">
-      <table class="data-table" id="acp-table">
-        <thead>
-          <tr>
-            <th>個案</th><th>負責醫師</th><th>收案日期</th><th>收案滿6月</th>
-            <th>ACP說明</th><th>AD說明</th><th>ACP簽署</th>
-            <th>健保卡註記</th><th>家屬說明</th><th>狀態</th><th>操作</th>
-          </tr>
-        </thead>
-        <tbody id="acp-tbody"></tbody>
-      </table>
-    </div>
+    <div id="casemap-container" style="width:100%;height:calc(100vh - 180px);border-radius:12px;overflow:hidden;border:1px solid #e0e0e0;"></div>
   </section>
 
   <!-- ====== 警示待辦 ====== -->
@@ -501,6 +461,7 @@
 <div id="toast-container"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="firebase-config.js"></script>
 <script src="cases-data.js"></script>
 <script src="data.js"></script>
