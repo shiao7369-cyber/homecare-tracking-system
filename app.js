@@ -1865,28 +1865,9 @@ async function geocodeAllCases() {
 
   for (const c of toGeocode) {
     const cacheKey = getCaseGeoAddress(c);
-    const cleanAddr = cleanAddressForGeo(cacheKey);
 
-    // 第1次：清理後的完整地址
-    let result = await geocodeAddress(cleanAddr);
-
-    // 第2次：去掉巷弄號，只留路街+號
-    if (!result && c.address) {
-      const noAlley = cleanAddr.replace(/\d+巷.*?(\d+號)/, '$1').replace(/\d+弄.*?(\d+號)/, '$1');
-      if (noAlley !== cleanAddr) {
-        await new Promise(r => setTimeout(r, 1100));
-        result = await geocodeAddress(noAlley);
-      }
-    }
-
-    // 第3次：只用路街名（不含號碼）
-    if (!result && c.address) {
-      const streetMatch = cleanAddr.match(/(.*?[路街道][一二三四五六七八九十\d]*段?)/);
-      if (streetMatch) {
-        await new Promise(r => setTimeout(r, 1100));
-        result = await geocodeAddress(streetMatch[1]);
-      }
-    }
+    // 伺服器端自動嘗試多種策略
+    let result = await geocodeAddress(cacheKey);
 
     if (result) {
       c.lat = result.lat; c.lng = result.lng;
