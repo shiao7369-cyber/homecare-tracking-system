@@ -1642,7 +1642,7 @@ function renderCaseMap() {
 
   filtered.forEach((c, idx) => {
     let lat, lng;
-    const cacheKey = c.address || '';
+    const cacheKey = getCaseGeoAddress(c);
 
     // 優先使用個案已存的座標
     if (c.lat && c.lng) {
@@ -1708,7 +1708,28 @@ function renderCaseMap() {
   }
 }
 
-// 使用 Nominatim 批次地理編碼
+// 地理編碼單一地址（透過 server proxy）
+async function geocodeAddress(addr) {
+  try {
+    const resp = await apiCall('GET', `/api/geocode?q=${encodeURIComponent(addr)}`);
+    if (Array.isArray(resp) && resp.length > 0) {
+      return { lat: parseFloat(resp[0].lat), lng: parseFloat(resp[0].lon) };
+    }
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+// 取得個案的最佳地址字串
+function getCaseGeoAddress(c) {
+  if (c.address) return c.address;
+  // 沒有完整地址時，用 縣市+行政區+村里 組合
+  let addr = '桃園市';
+  if (c.district) addr += c.district;
+  if (c.village) addr += c.village;
+  return addr.length > 3 ? addr : '';
+}
+
+// 批次地理編碼
 async function geocodeAllCases() {
   const btn = document.getElementById('btn-geocode');
   const bar = document.getElementById('casemap-geocode-bar');
@@ -1720,11 +1741,18 @@ async function geocodeAllCases() {
 
   const active = getActiveCases(db);
   const geoCache = getGeoCache();
-  const toGeocode = active.filter(c => c.address && !c.lat && !geoCache[c.address]);
+  const toGeocode = active.filter(c => {
+    if (c.lat && c.lng) return false;
+    const addr = getCaseGeoAddress(c);
+    if (!addr) return false;
+    if (geoCache[addr]) return false;
+    return true;
+  });
 
   if (toGeocode.length === 0) {
-    statusEl.innerHTML = '<span style="color:#4CAF50">✓ 所有有地址的個案都已定位</span>';
+    statusEl.innerHTML = '<span style="color:#4CAF50">✓ 所有個案都已定位</span>';
     btn.disabled = false; btn.textContent = '📍 地址定位';
+    renderCaseMap();
     return;
   }
 
@@ -1732,40 +1760,39 @@ async function geocodeAllCases() {
   statusEl.textContent = `正在定位 0 / ${toGeocode.length} ...`;
 
   for (const c of toGeocode) {
-    try {
-      // Nominatim rate limit: 1 req/sec
-      const addr = encodeURIComponent(c.address);
-      const resp = await fetch(`https://nominatim.openstreetmap.org/search?q=${addr}&format=json&limit=1&countrycodes=tw`, {
-        headers: { 'Accept-Language': 'zh-TW' }
-      });
-      const results = await resp.json();
-      if (results.length > 0) {
-        const lat = parseFloat(results[0].lat);
-        const lng = parseFloat(results[0].lon);
-        c.lat = lat; c.lng = lng;
-        geoCache[c.address] = [lat, lng];
-        success++;
-      } else {
-        // 嘗試簡化地址再查詢
-        const simpleAddr = c.address.replace(/\d+巷\d+弄\d+號.*/, '').replace(/\d+號.*/, '').replace(/之\d+/, '');
-        if (simpleAddr !== c.address && simpleAddr.length > 6) {
-          const resp2 = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(simpleAddr)}&format=json&limit=1&countrycodes=tw`);
-          const r2 = await resp2.json();
-          if (r2.length > 0) {
-            const lat = parseFloat(r2[0].lat);
-            const lng = parseFloat(r2[0].lon);
-            c.lat = lat; c.lng = lng;
-            geoCache[c.address] = [lat, lng];
-            success++;
-          } else { fail++; }
-          await new Promise(r => setTimeout(r, 1100));
-        } else { fail++; }
+    const addr = getCaseGeoAddress(c);
+    let result = await geocodeAddress(addr);
+
+    // 如果完整地址失敗，嘗試逐步簡化
+    if (!result && c.address) {
+      // 去掉巷弄號
+      const simplified = c.address.replace(/\d+巷.*/, '').replace(/\d+弄.*/, '').replace(/\d+號.*/, '').trim();
+      if (simplified !== c.address && simplified.length > 5) {
+        await new Promise(r => setTimeout(r, 1100));
+        result = await geocodeAddress(simplified);
       }
-    } catch (e) { fail++; }
+      // 再試只用路/街名
+      if (!result) {
+        const streetMatch = c.address.match(/(.*?[路街道])/);
+        if (streetMatch) {
+          const streetAddr = '桃園市' + (c.district || '') + streetMatch[1].replace(/.*[區鄉鎮市]/, '');
+          await new Promise(r => setTimeout(r, 1100));
+          result = await geocodeAddress(streetAddr);
+        }
+      }
+    }
+
+    if (result) {
+      c.lat = result.lat; c.lng = result.lng;
+      geoCache[addr] = [result.lat, result.lng];
+      success++;
+    } else {
+      fail++;
+    }
 
     done++;
     statusEl.textContent = `正在定位 ${done} / ${toGeocode.length} (成功 ${success}, 失敗 ${fail})...`;
-    // Nominatim rate limit
+    // Nominatim rate limit: 1 req/sec
     await new Promise(r => setTimeout(r, 1100));
   }
 

@@ -28,12 +28,12 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://www.gstatic.com", "https://cdn.jsdelivr.net", "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://www.gstatic.com", "https://cdn.jsdelivr.net", "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/", "https://unpkg.com"],
       scriptSrcAttr: ["'unsafe-inline'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdn.jsdelivr.net"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdn.jsdelivr.net", "https://unpkg.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdn.jsdelivr.net"],
-      connectSrc: ["'self'"],
-      imgSrc: ["'self'", "data:"],
+      connectSrc: ["'self'", "https://nominatim.openstreetmap.org"],
+      imgSrc: ["'self'", "data:", "https://*.tile.openstreetmap.org"],
       frameSrc: ["'none'"]
     }
   },
@@ -784,6 +784,22 @@ app.post('/api/lcms-sync', requireAuth, upload.single('file'), (req, res) => {
 // cases-data.js 不在 git 中（含個資），提供空白 fallback
 app.get('/cases-data.js', (req, res) => {
   res.type('application/javascript').send('const RAW_CASES_DATA = [];');
+});
+
+// 地理編碼代理（避免 CSP/CORS 問題）
+app.get('/api/geocode', requireAuth, async (req, res) => {
+  const addr = req.query.q;
+  if (!addr) return res.status(400).json({ error: '缺少地址參數' });
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(addr)}&format=json&limit=1&countrycodes=tw`;
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'HomecareTrackingSystem/1.0', 'Accept-Language': 'zh-TW' }
+    });
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // SPA fallback
