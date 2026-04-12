@@ -1561,10 +1561,20 @@ const DISTRICT_COORDS = {
   '大園區':[25.0629,121.1975],'觀音區':[25.0335,121.0835],'新屋區':[24.9721,121.1062],
   '復興區':[24.8208,121.3530]
 };
-const CMS_COLORS = {
-  '第1級':'#4CAF50','第2級':'#8BC34A','第3級':'#CDDC39','第4級':'#FFC107',
-  '第5級':'#FF9800','第6級':'#FF5722','第7級':'#E91E63','第8級':'#9C27B0'
+const CMS_COLORS_MAP = {
+  1:'#4CAF50', 2:'#8BC34A', 3:'#CDDC39', 4:'#FFC107',
+  5:'#FF9800', 6:'#FF5722', 7:'#E91E63', 8:'#9C27B0'
 };
+function getCmsColor(level) {
+  if (level == null) return '#999';
+  const n = typeof level === 'number' ? level : parseInt(String(level).replace(/[^\d]/g, ''));
+  return CMS_COLORS_MAP[n] || '#999';
+}
+function getCmsLabel(level) {
+  if (level == null) return '-';
+  const n = typeof level === 'number' ? level : parseInt(String(level).replace(/[^\d]/g, ''));
+  return n ? `第${n}級` : '-';
+}
 
 // 地理編碼快取 (存 localStorage)
 function getGeoCache() {
@@ -1589,8 +1599,8 @@ function initCaseMap() {
     const div = L.DomUtil.create('div', 'leaflet-control');
     div.style.cssText = 'background:#fff;padding:8px 12px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.2);font-size:0.8rem;line-height:1.8';
     div.innerHTML = '<strong>CMS 等級</strong><br>' +
-      Object.entries(CMS_COLORS).map(([k,v]) =>
-        `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${v};margin-right:4px;vertical-align:middle"></span>${k}`
+      Object.entries(CMS_COLORS_MAP).map(([k,v]) =>
+        `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${v};margin-right:4px;vertical-align:middle"></span>第${k}級`
       ).join('<br>');
     return div;
   };
@@ -1612,7 +1622,7 @@ function renderCaseMap() {
     districts.forEach(d => { districtSel.add(new Option(d, d)); });
   }
   if (cmsSel && cmsSel.options.length <= 1) {
-    for (let i = 1; i <= 8; i++) cmsSel.add(new Option(`第${i}級`, `第${i}級`));
+    for (let i = 1; i <= 8; i++) cmsSel.add(new Option(`第${i}級`, String(i)));
   }
 
   const filterDoctor = doctorSel?.value || '';
@@ -1622,7 +1632,7 @@ function renderCaseMap() {
   let filtered = active.filter(c => {
     if (filterDoctor && c.doctorId !== filterDoctor) return false;
     if (filterDistrict && c.district !== filterDistrict) return false;
-    if (filterCms && c.cmsLevel !== filterCms) return false;
+    if (filterCms && String(c.cmsLevel) !== filterCms) return false;
     return true;
   });
 
@@ -1667,7 +1677,8 @@ function renderCaseMap() {
       fallback++;
     }
 
-    const color = CMS_COLORS[c.cmsLevel] || '#E53935';
+    const color = getCmsColor(c.cmsLevel);
+    const cmsLabel = getCmsLabel(c.cmsLevel);
     const doctor = findMember(db, c.doctorId);
     const isGeocoded = (c.lat && c.lng) || (cacheKey && geoCache[cacheKey]);
     const label = `${c.caseNo || c.id} ${c.name}`;
@@ -1708,7 +1719,7 @@ function renderCaseMap() {
     marker.bindPopup(`
       <div style="min-width:220px;line-height:1.7;font-size:0.9rem">
         <div style="font-size:1.1rem;font-weight:700;margin-bottom:4px">${esc(c.name)}
-          <span style="background:${color};color:#fff;padding:1px 8px;border-radius:4px;font-size:0.75rem;margin-left:6px">${c.cmsLevel || '-'}</span>
+          <span style="background:${color};color:#fff;padding:1px 8px;border-radius:4px;font-size:0.75rem;margin-left:6px">${cmsLabel}</span>
         </div>
         <div>📋 ${esc(c.caseNo || c.id)}</div>
         <div>🏠 ${esc(c.address || (c.district ? '桃園市' + c.district + (c.village||'') : '-'))}</div>
@@ -1744,7 +1755,8 @@ function renderCaseMap() {
 // 在地圖上新增單一個案圖釘
 function addCasePin(c) {
   if (!caseMapInstance || !c.lat || !c.lng) return;
-  const color = CMS_COLORS[c.cmsLevel] || '#E53935';
+  const color = getCmsColor(c.cmsLevel);
+  const cmsLabel = getCmsLabel(c.cmsLevel);
   const doctor = findMember(db, c.doctorId);
   const label = `${c.caseNo || c.id} ${c.name}`;
   const pinSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="40" viewBox="0 0 28 40">
@@ -1772,7 +1784,7 @@ function addCasePin(c) {
   marker.bindPopup(`
     <div style="min-width:220px;line-height:1.7;font-size:0.9rem">
       <div style="font-size:1.1rem;font-weight:700;margin-bottom:4px">${esc(c.name)}
-        <span style="background:${color};color:#fff;padding:1px 8px;border-radius:4px;font-size:0.75rem;margin-left:6px">${c.cmsLevel || '-'}</span>
+        <span style="background:${color};color:#fff;padding:1px 8px;border-radius:4px;font-size:0.75rem;margin-left:6px">${cmsLabel}</span>
       </div>
       <div>📋 ${esc(c.caseNo || c.id)}</div>
       <div>🏠 ${esc(c.address || (c.district ? '桃園市' + c.district + (c.village||'') : '-'))}</div>
