@@ -12,6 +12,16 @@
   #page-casemap #casemap-container { flex: 1; min-height: 500px; }
   .casemap-geocode-bar { display:flex; align-items:center; gap:8px; padding:4px 1rem; font-size:0.85rem; color:#666; }
   .casemap-geocode-bar .badge { font-size:0.75rem; }
+  .casemap-pin { background:none !important; border:none !important; }
+  .casemap-label {
+    background: #fff !important; border: 1px solid #ccc !important;
+    border-radius: 3px !important; padding: 1px 6px !important;
+    font-size: 12px !important; font-weight: 500 !important;
+    color: #333 !important; white-space: nowrap !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15) !important;
+  }
+  .casemap-label::before { border-right-color: #ccc !important; }
+  .leaflet-popup-content { margin: 10px 14px !important; }
 </style>
 </head>
 <body>
