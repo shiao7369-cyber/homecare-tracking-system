@@ -569,7 +569,7 @@ function viewCase(caseId) {
           <tr><td style="padding:2px 8px;color:var(--gray-500)">CMS等級</td><td>第${c.cmsLevel}級</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">收案日期</td><td>${c.enrollDate || '-'}</td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">服務天數</td><td>${c.serviceDays || '-'} 天</td></tr>
-          <tr><td style="padding:2px 8px;color:var(--gray-500)">地址</td><td>${esc(c.address)}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--gray-500)">地址</td><td><a href="#" onclick="event.preventDefault();closeModal();showCaseOnMap('${c.id}')" style="color:var(--primary);text-decoration:underline;cursor:pointer" title="在地圖上顯示">📍 ${esc(c.address || '-')}</a></td></tr>
           <tr><td style="padding:2px 8px;color:var(--gray-500)">居住地里</td><td>${esc(c.village || c.district || '-')}</td></tr>
         </table>
       </div>
@@ -1564,6 +1564,40 @@ function getGeoCache() {
 }
 function setGeoCache(cache) {
   localStorage.setItem('geocache', JSON.stringify(cache));
+}
+
+// 從個案詳情跳到地圖定位
+function showCaseOnMap(caseId) {
+  switchPage('casemap');
+  setTimeout(() => {
+    const c = findCase(db, caseId);
+    if (!c) return;
+    if (c.lat && c.lng && caseMapInstance) {
+      caseMapInstance.setView([c.lat, c.lng], 17);
+      // 找到對應 marker 並開啟 popup
+      caseMapMarkers.forEach(m => {
+        if (m.getLatLng().lat === c.lat && m.getLatLng().lng === c.lng) {
+          m.openPopup();
+        }
+      });
+    } else {
+      // 沒有座標，嘗試定位
+      const addr = getCaseGeoAddress(c);
+      if (addr) {
+        geocodeAddress(addr).then(result => {
+          if (result) {
+            c.lat = result.lat; c.lng = result.lng;
+            localStorage.setItem(DB_KEY, JSON.stringify(db));
+            if (c.id) apiCall('PUT', `/api/data/cases/${c.id}`, c).catch(() => {});
+            renderCaseMap();
+            if (caseMapInstance) caseMapInstance.setView([c.lat, c.lng], 17);
+          } else {
+            showToast('無法定位此個案地址', 'warning');
+          }
+        });
+      }
+    }
+  }, 300);
 }
 
 function initCaseMap() {
