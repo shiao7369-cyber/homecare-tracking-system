@@ -3028,6 +3028,279 @@ function scheduleExport() {
   showToast('已匯出行程表');
 }
 
+// ==========================================
+//  訪視路線規劃（從行程表直接規劃當日路線）
+// ==========================================
+let _routeMapInstance = null;
+let _routeLayerGroup = null;
+
+function scheduleRouteplan() {
+  const filterDoc = document.getElementById('schedule-doctor')?.value || '';
+  const schedules = getScheduleData();
+
+  // 判斷日期：日檢視用當日，週/月檢視讓使用者選日期
+  let defaultDate = fmt(_scheduleCurrentDate || new Date());
+
+  // 取得本週有排程的日期列表（供選擇）
+  const ws = _scheduleWeekStart || getWeekStart(new Date());
+  const we = new Date(ws); we.setDate(we.getDate() + 6);
+  const datesWithVisits = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(ws); d.setDate(d.getDate() + i);
+    const ds = fmt(d);
+    const cnt = schedules.filter(s => s.date === ds && s.status !== 'cancelled' && (!filterDoc || s.doctorId === filterDoc)).length;
+    if (cnt > 0) datesWithVisits.push({ date: ds, d, cnt });
+  }
+
+  if (_scheduleViewMode === 'day') {
+    // 日檢視直接規劃當日
+    _doScheduleRoute(defaultDate, filterDoc);
+  } else {
+    // 週/月檢視：彈出選日期
+    if (datesWithVisits.length === 0) { showToast('本週無訪視排程可規劃', 'warning'); return; }
+    const dayNames = ['日','一','二','三','四','五','六'];
+    const optionsHtml = datesWithVisits.map(dv =>
+      `<option value="${dv.date}" ${dv.date === defaultDate ? 'selected' : ''}>${dv.date} (週${dayNames[dv.d.getDay()]}) — ${dv.cnt} 筆訪視</option>`
+    ).join('');
+    const body = `
+      <div class="route-date-select">
+        <label>📅 選擇日期：</label>
+        <select class="form-select" id="route-date-sel" style="width:auto;min-width:260px">${optionsHtml}</select>
+      </div>
+      <div id="route-preview-area" style="color:var(--gray-400);font-size:0.85rem;padding:8px 0">選擇日期後按「規劃路線」</div>`;
+    const footer = `
+      <button class="btn btn-outline" onclick="closeModal()">取消</button>
+      <button class="btn btn-success" onclick="closeModal();_doScheduleRoute(document.getElementById('route-date-sel').value,'${filterDoc}')">🗺️ 規劃路線</button>`;
+    openModal('選擇規劃日期', body, footer);
+  }
+}
+
+async function _doScheduleRoute(dateStr, filterDoc) {
+  const schedules = getScheduleData();
+  // 篩選當日有效訪視（排除已取消），按時間排序
+  let dayVisits = schedules.filter(s =>
+    s.date === dateStr && s.status !== 'cancelled' && (!filterDoc || s.doctorId === filterDoc)
+  ).sort((a, b) => a.time.localeCompare(b.time));
+
+  if (dayVisits.length === 0) { showToast('該日無訪視排程', 'warning'); return; }
+
+  // 取得個案座標
+  const visitCases = dayVisits.map(v => {
+    const c = findCase(db, v.caseId);
+    return { visit: v, case: c, lat: c?.lat, lng: c?.lng, name: c?.name || v.caseName, address: c?.address || c?.district || '' };
+  });
+
+  const withCoords = visitCases.filter(vc => vc.lat && vc.lng);
+  const noCoords = visitCases.filter(vc => !vc.lat || !vc.lng);
+
+  if (withCoords.length < 1) {
+    showToast('所有個案都尚未定位，請先到個案地圖進行地址定位', 'warning');
+    return;
+  }
+
+  // 構建 Modal
+  const dayNames = ['日','一','二','三','四','五','六'];
+  const dd = new Date(dateStr + 'T00:00:00');
+  const dateLabel = `${dd.getFullYear()}年${dd.getMonth()+1}月${dd.getDate()}日 (週${dayNames[dd.getDay()]})`;
+
+  const body = `
+    <div style="margin-bottom:8px;font-size:0.95rem">
+      <strong>📅 ${dateLabel}</strong>
+      <span style="margin-left:12px;color:var(--gray-400)">${dayVisits.length} 筆訪視${noCoords.length > 0 ? `，${noCoords.length} 筆未定位` : ''}</span>
+    </div>
+    <div id="route-modal-map" class="route-modal-map"></div>
+    <div id="route-modal-info" class="route-modal-info">
+      <span style="color:var(--gray-400)">路線計算中...</span>
+    </div>
+    <div id="route-stop-list" class="route-stop-list"></div>
+    ${noCoords.length > 0 ? `<div style="margin-top:6px;font-size:0.78rem;color:#d97706">⚠️ 未定位個案：${noCoords.map(vc => vc.name).join('、')}</div>` : ''}`;
+  const footer = `
+    <button class="btn btn-outline" onclick="closeModal();_destroyRouteMap()">關閉</button>
+    <button class="btn btn-outline" onclick="_routeOptimize('${dateStr}','${filterDoc}')">🔄 最佳化順序</button>
+    <button class="btn btn-primary" onclick="_routeOpenInMap()">🗺️ 在地圖上檢視</button>`;
+  openModal(`路線規劃 — ${dateLabel}`, body, footer);
+
+  // 等 DOM 渲染後初始化地圖
+  await new Promise(r => setTimeout(r, 100));
+  _initRouteMap(withCoords, dateStr, filterDoc);
+}
+
+function _initRouteMap(visitCases, dateStr, filterDoc) {
+  const mapEl = document.getElementById('route-modal-map');
+  if (!mapEl) return;
+
+  // 銷毀舊地圖
+  if (_routeMapInstance) { _routeMapInstance.remove(); _routeMapInstance = null; }
+
+  const center = visitCases.length > 0 ? [visitCases[0].lat, visitCases[0].lng] : [24.9936, 121.3010];
+  _routeMapInstance = L.map('route-modal-map').setView(center, 13);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 19
+  }).addTo(_routeMapInstance);
+
+  _routeLayerGroup = L.layerGroup().addTo(_routeMapInstance);
+
+  // 加入序號標記
+  const { docColorMap, DOC_COLORS } = _scheduleDocSetup();
+  visitCases.forEach((vc, i) => {
+    const docIdx = docColorMap[vc.visit.doctorId] ?? 0;
+    const color = DOC_COLORS[docIdx];
+    const numIcon = L.divIcon({
+      html: `<div style="background:${color};color:#fff;width:28px;height:28px;border-radius:50%;text-align:center;line-height:28px;font-size:13px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${i + 1}</div>`,
+      className: '', iconSize: [28, 28], iconAnchor: [14, 14]
+    });
+    const endTime = addMinutes(vc.visit.time, vc.visit.duration || 30);
+    const marker = L.marker([vc.lat, vc.lng], { icon: numIcon }).addTo(_routeLayerGroup);
+    marker.bindPopup(`<strong>#${i+1} ${esc(vc.name)}</strong><br>⏰ ${vc.visit.time}-${endTime}<br>📍 ${esc(vc.address)}`);
+  });
+
+  // 更新停站列表
+  _updateStopList(visitCases);
+
+  // 計算路線
+  if (visitCases.length >= 2) {
+    _calcRoute(visitCases);
+  } else {
+    document.getElementById('route-modal-info').innerHTML =
+      `<div class="route-stat"><span class="stat-icon">📍</span> 僅 1 站，無需路線規劃</div>`;
+    _routeMapInstance.setView([visitCases[0].lat, visitCases[0].lng], 15);
+  }
+}
+
+function _updateStopList(visitCases) {
+  const listEl = document.getElementById('route-stop-list');
+  if (!listEl) return;
+  const { docColorMap, DOC_COLORS } = _scheduleDocSetup();
+  listEl.innerHTML = visitCases.map((vc, i) => {
+    const docIdx = docColorMap[vc.visit.doctorId] ?? 0;
+    const color = DOC_COLORS[docIdx];
+    const doc = findMember(db, vc.visit.doctorId);
+    const endTime = addMinutes(vc.visit.time, vc.visit.duration || 30);
+    const typeIcon = { home:'🏠', phone:'📞', video:'📹' }[vc.visit.type] || '🏠';
+    return `<div class="route-stop-item">
+      <div class="route-stop-num" style="background:${color}">${i + 1}</div>
+      <div class="route-stop-detail">
+        <div class="route-stop-name">${esc(vc.name)}</div>
+        <div class="route-stop-addr">${typeIcon} ${esc(vc.address)}</div>
+      </div>
+      <div class="route-stop-time">${vc.visit.time} — ${endTime}${doc ? '<br>' + esc(doc.name) : ''}</div>
+    </div>`;
+  }).join('');
+}
+
+async function _calcRoute(visitCases) {
+  const coords = visitCases.map(vc => `${vc.lng},${vc.lat}`).join(';');
+  const infoEl = document.getElementById('route-modal-info');
+
+  try {
+    const data = await apiCall('GET', `/api/route?coords=${encodeURIComponent(coords)}`);
+    if (data.routes && data.routes.length > 0) {
+      const route = data.routes[0];
+      const routeCoords = route.geometry.coordinates.map(c => [c[1], c[0]]);
+      L.polyline(routeCoords, {
+        color: '#4A90D9', weight: 5, opacity: 0.85, dashArray: '10,5'
+      }).addTo(_routeLayerGroup);
+
+      const km = (route.distance / 1000).toFixed(1);
+      const mins = Math.round(route.duration / 60);
+      const hours = Math.floor(mins / 60);
+      const remainMins = mins % 60;
+      const timeStr = hours > 0 ? `${hours}小時${remainMins}分` : `${mins}分鐘`;
+
+      infoEl.innerHTML = `
+        <div class="route-stat"><span class="stat-icon">📍</span> ${visitCases.length} 站</div>
+        <div class="route-stat"><span class="stat-icon">🛣️</span> ${km} 公里</div>
+        <div class="route-stat"><span class="stat-icon">⏱️</span> ${timeStr}</div>
+        <div class="route-stat"><span class="stat-icon">🚗</span> 開車預估</div>`;
+
+      // 調整地圖範圍
+      const bounds = L.latLngBounds(visitCases.map(vc => [vc.lat, vc.lng]));
+      _routeMapInstance.fitBounds(bounds.pad(0.15));
+    } else {
+      infoEl.innerHTML = '<span style="color:#dc2626">❌ 無法計算路線</span>';
+    }
+  } catch (e) {
+    infoEl.innerHTML = `<span style="color:#dc2626">❌ 路線計算失敗：${e.message}</span>`;
+  }
+}
+
+// 路線最佳化：用 TSP 最近鄰法重新排序
+async function _routeOptimize(dateStr, filterDoc) {
+  const schedules = getScheduleData();
+  let dayVisits = schedules.filter(s =>
+    s.date === dateStr && s.status !== 'cancelled' && (!filterDoc || s.doctorId === filterDoc)
+  ).sort((a, b) => a.time.localeCompare(b.time));
+
+  const visitCases = dayVisits.map(v => {
+    const c = findCase(db, v.caseId);
+    return { visit: v, case: c, lat: c?.lat, lng: c?.lng, name: c?.name || v.caseName, address: c?.address || c?.district || '' };
+  }).filter(vc => vc.lat && vc.lng);
+
+  if (visitCases.length < 2) return;
+
+  // TSP 最近鄰法
+  const ordered = [visitCases[0]];
+  const remaining = visitCases.slice(1);
+  while (remaining.length > 0) {
+    const last = ordered[ordered.length - 1];
+    let nearest = 0, minDist = Infinity;
+    remaining.forEach((vc, i) => {
+      const d = Math.sqrt((vc.lat - last.lat) ** 2 + (vc.lng - last.lng) ** 2);
+      if (d < minDist) { minDist = d; nearest = i; }
+    });
+    ordered.push(remaining.splice(nearest, 1)[0]);
+  }
+
+  // 重新指定時間順序
+  const times = visitCases.map(vc => vc.visit.time).sort();
+  ordered.forEach((vc, i) => { vc.visit.time = times[i]; });
+
+  // 更新 schedule data
+  const allSchedules = getScheduleData();
+  ordered.forEach(vc => {
+    const idx = allSchedules.findIndex(s => s.id === vc.visit.id);
+    if (idx >= 0) allSchedules[idx].time = vc.visit.time;
+  });
+  saveScheduleData(allSchedules);
+
+  // 重新繪製
+  _routeLayerGroup.clearLayers();
+  const { docColorMap, DOC_COLORS } = _scheduleDocSetup();
+  ordered.forEach((vc, i) => {
+    const docIdx = docColorMap[vc.visit.doctorId] ?? 0;
+    const color = DOC_COLORS[docIdx];
+    const numIcon = L.divIcon({
+      html: `<div style="background:${color};color:#fff;width:28px;height:28px;border-radius:50%;text-align:center;line-height:28px;font-size:13px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${i + 1}</div>`,
+      className: '', iconSize: [28, 28], iconAnchor: [14, 14]
+    });
+    const endTime = addMinutes(vc.visit.time, vc.visit.duration || 30);
+    L.marker([vc.lat, vc.lng], { icon: numIcon }).addTo(_routeLayerGroup)
+      .bindPopup(`<strong>#${i+1} ${esc(vc.name)}</strong><br>⏰ ${vc.visit.time}-${endTime}<br>📍 ${esc(vc.address)}`);
+  });
+  _updateStopList(ordered);
+  await _calcRoute(ordered);
+
+  showToast('已依最短路徑重新排序訪視時間', 'success');
+}
+
+function _routeOpenInMap() {
+  closeModal();
+  _destroyRouteMap();
+  // 切到個案地圖頁
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const mapNav = document.querySelector('[data-page="casemap"]');
+  if (mapNav) mapNav.classList.add('active');
+  document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
+  const mapPage = document.getElementById('page-casemap');
+  if (mapPage) mapPage.style.display = '';
+  renderCaseMap();
+}
+
+function _destroyRouteMap() {
+  if (_routeMapInstance) { _routeMapInstance.remove(); _routeMapInstance = null; }
+  _routeLayerGroup = null;
+}
+
 function computeKPI(doctorFilter) {
   const active = getActiveCases(db).filter(c => {
     if (!doctorFilter) return true;
