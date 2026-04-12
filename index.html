@@ -523,12 +523,7 @@
       </div>
       <div class="toolbar-right" style="flex-wrap:wrap;gap:4px;">
         <span id="casemap-count" style="font-size:0.9rem;color:#666;"></span>
-        <!-- 地圖模式切換 -->
-        <div class="casemap-mode-btns">
-          <button class="active" onclick="switchMapMode('pin')" id="btn-mode-pin" title="圖釘模式">📍 圖釘</button>
-          <button onclick="switchMapMode('heat')" id="btn-mode-heat" title="熱力圖">🔥 熱力</button>
-          <button onclick="switchMapMode('choropleth')" id="btn-mode-choropleth" title="行政區色塊">🗺️ 區域</button>
-        </div>
+        <button class="btn btn-xs btn-primary" onclick="switchPage('schedule')" title="訪視排程">📅 訪視排程</button>
         <button class="btn btn-xs btn-outline" onclick="geocodeAllCases()" id="btn-geocode" title="依地址定位所有個案">📍 地址定位</button>
         <button class="btn btn-xs btn-outline" onclick="showRoutePanel()" id="btn-route" title="醫師訪視路線">🚗 路線規劃</button>
         <button class="btn btn-xs btn-outline" onclick="startBatchCorrect()" id="btn-batch-correct" title="批次校正未定位個案">✏️ 批次校正</button>
@@ -625,6 +620,6 @@
 <script src="firebase-config.js?v=20260412b"></script>
 <script src="cases-data.js"></script>
 <script src="data.js?v=20260412"></script>
-<script src="app.js?v=20260412sched"></script>
+<script src="app.js?v=20260412sched2"></script>
 </body>
 </html>
