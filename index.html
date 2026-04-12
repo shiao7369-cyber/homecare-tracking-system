@@ -196,33 +196,71 @@
   .month-visit-more { font-size:0.7rem; color:var(--gray-400); padding:1px 5px; cursor:pointer; }
   .month-visit-more:hover { color:var(--primary); }
 
-  /* ===== 路線規劃 Modal ===== */
-  .route-modal-map { width:100%; height:400px; border-radius:10px; border:1px solid var(--gray-200); }
-  .route-modal-info {
-    display:flex; gap:20px; padding:12px 0 4px; font-size:0.9rem; flex-wrap:wrap; align-items:center;
+  /* ===== 路線規劃面板（個案地圖上方） ===== */
+  .visit-route-panel {
+    background:#fff; border:1px solid var(--gray-200); border-radius:10px;
+    padding:12px 16px; box-shadow:var(--shadow); margin-bottom:8px;
   }
-  .route-modal-info .route-stat {
-    display:flex; align-items:center; gap:6px; background:var(--gray-50); padding:6px 14px;
-    border-radius:8px; font-weight:600;
+  .visit-route-header {
+    display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;
+    margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid var(--gray-100);
   }
-  .route-modal-info .route-stat .stat-icon { font-size:1.1rem; }
-  .route-stop-list {
-    max-height:200px; overflow-y:auto; margin-top:8px; border:1px solid var(--gray-200);
-    border-radius:8px; background:#fff;
+  .visit-route-title { display:flex; align-items:center; gap:12px; font-weight:700; font-size:1rem; }
+  .visit-route-date { font-size:0.88rem; color:var(--primary); font-weight:600; }
+  .visit-route-actions { display:flex; gap:6px; }
+  .visit-route-stats {
+    display:flex; gap:12px; padding:6px 0; font-size:0.85rem; flex-wrap:wrap; align-items:center;
   }
-  .route-stop-item {
-    display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--gray-100);
-    font-size:0.85rem;
+  .visit-route-stats .route-stat {
+    display:flex; align-items:center; gap:5px; background:var(--gray-50); padding:5px 12px;
+    border-radius:8px; font-weight:600; font-size:0.82rem;
   }
-  .route-stop-item:last-child { border-bottom:none; }
+  .visit-route-stats .route-stat .stat-icon { font-size:1rem; }
+  .visit-route-stops {
+    max-height:260px; overflow-y:auto; margin-top:8px;
+    border:1px solid var(--gray-200); border-radius:8px; background:#fafbfc;
+  }
+  .visit-route-warn { margin-top:6px; font-size:0.78rem; color:#d97706; }
+
+  /* 站點卡片 */
+  .route-stop-card {
+    display:flex; align-items:center; gap:10px; padding:10px 12px;
+    border-bottom:1px solid var(--gray-100); cursor:pointer; transition:background 0.15s;
+  }
+  .route-stop-card:hover { background:var(--primary-light); }
+  .route-stop-card:last-child { border-bottom:none; }
   .route-stop-num {
-    width:26px; height:26px; border-radius:50%; background:var(--primary); color:#fff;
-    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:0.8rem; flex-shrink:0;
+    width:30px; height:30px; border-radius:50%; color:#fff; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:0.85rem;
+    box-shadow:0 1px 3px rgba(0,0,0,0.2);
   }
-  .route-stop-detail { flex:1; }
-  .route-stop-name { font-weight:600; }
-  .route-stop-addr { font-size:0.78rem; color:var(--gray-400); }
-  .route-stop-time { font-size:0.78rem; color:var(--primary); font-weight:600; white-space:nowrap; }
+  .route-stop-detail { flex:1; min-width:0; }
+  .route-stop-name { font-weight:700; font-size:0.9rem; }
+  .route-stop-addr { font-size:0.78rem; color:var(--gray-400); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .route-stop-doc { font-size:0.76rem; color:var(--gray-400); }
+  .route-stop-eta { text-align:right; flex-shrink:0; }
+  .route-stop-eta .eta-arrival { font-size:0.92rem; font-weight:700; color:var(--primary); }
+  .route-stop-eta .eta-departure { font-size:0.72rem; color:var(--gray-400); }
+
+  /* 行車段 */
+  .route-travel-seg {
+    display:flex; align-items:center; gap:8px; padding:2px 12px 2px 24px;
+    background:var(--gray-50);
+  }
+  .route-travel-line {
+    width:2px; height:16px; background:var(--primary); opacity:0.3; margin-left:14px; flex-shrink:0;
+  }
+  .route-travel-info {
+    font-size:0.75rem; color:var(--gray-400); font-weight:500;
+  }
+
+  /* 地圖上的路線序號標記 */
+  .route-marker-num {
+    width:32px; height:32px; border-radius:50%; color:#fff; text-align:center;
+    line-height:32px; font-size:14px; font-weight:700;
+    border:3px solid #fff; box-shadow:0 2px 8px rgba(0,0,0,0.35);
+  }
+
   .route-date-select { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
   .route-date-select label { font-weight:600; font-size:0.9rem; }
 </style>
@@ -726,6 +764,6 @@
 <script src="firebase-config.js?v=20260412b"></script>
 <script src="cases-data.js"></script>
 <script src="data.js?v=20260412"></script>
-<script src="app.js?v=20260412route"></script>
+<script src="app.js?v=20260412route2"></script>
 </body>
 </html>
