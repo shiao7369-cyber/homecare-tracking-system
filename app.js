@@ -1646,12 +1646,11 @@ function renderCaseMap() {
       lat = geoCache[cacheKey][0]; lng = geoCache[cacheKey][1];
       geocoded++;
     }
-    // 最後退回行政區中心 + 散布
+    // 最後退回行政區中心 + 散布（所有個案都必須顯示）
     else {
       const dist = c.district || '';
-      const baseCoord = DISTRICT_COORDS[dist];
-      if (!baseCoord) return;
-      const angle = (idx * 2.399) + (c.id ? c.id.charCodeAt(c.id.length-1)*0.1 : 0); // golden angle spread
+      const baseCoord = DISTRICT_COORDS[dist] || DISTRICT_COORDS['桃園區'] || [24.9936, 121.3010];
+      const angle = (idx * 2.399) + (c.id ? c.id.charCodeAt(c.id.length-1)*0.1 : 0);
       const spread = 0.006;
       const r = spread * Math.sqrt((idx % 50) / 50);
       lat = baseCoord[0] + r * Math.cos(angle);
@@ -1723,9 +1722,11 @@ function renderCaseMap() {
   const bar = document.getElementById('casemap-geocode-bar');
   if (bar) {
     bar.style.display = 'flex';
+    const total = geocoded + fallback;
     document.getElementById('casemap-geocode-status').innerHTML =
       `<span class="badge badge-success">已定位 ${geocoded}</span> ` +
       `<span class="badge badge-gray">約略位置 ${fallback}</span> ` +
+      `<span style="color:#666;margin-left:8px">地圖 ${total} / 個案 ${filtered.length}</span> ` +
       (fallback > 0 ? '<span style="color:#999">← 點「📍 地址定位」可精確定位</span>' : '<span style="color:#4CAF50">✓ 全部已精確定位</span>');
   }
 
