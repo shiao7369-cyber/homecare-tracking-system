@@ -6,6 +6,13 @@
 <title>居家失能個案家庭醫師照護方案 — 個案追蹤管理系統</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  #page-casemap { padding: 0.5rem !important; display: flex; flex-direction: column; }
+  #page-casemap .page-toolbar { padding: 0 1rem; flex-shrink: 0; }
+  #page-casemap #casemap-container { flex: 1; min-height: 500px; }
+  .casemap-geocode-bar { display:flex; align-items:center; gap:8px; padding:4px 1rem; font-size:0.85rem; color:#666; }
+  .casemap-geocode-bar .badge { font-size:0.75rem; }
+</style>
 </head>
 <body>
 
@@ -382,9 +389,13 @@
       </div>
       <div class="toolbar-right">
         <span id="casemap-count" style="font-size:0.9rem;color:#666;"></span>
+        <button class="btn btn-xs btn-outline" onclick="geocodeAllCases()" id="btn-geocode" title="依地址定位所有個案">📍 地址定位</button>
       </div>
     </div>
-    <div id="casemap-container" style="width:100%;height:calc(100vh - 180px);border-radius:12px;overflow:hidden;border:1px solid #e0e0e0;"></div>
+    <div class="casemap-geocode-bar" id="casemap-geocode-bar" style="display:none">
+      <span id="casemap-geocode-status"></span>
+    </div>
+    <div id="casemap-container" style="width:100%;border-radius:12px;overflow:hidden;border:1px solid #e0e0e0;"></div>
   </section>
 
   <!-- ====== 警示待辦 ====== -->

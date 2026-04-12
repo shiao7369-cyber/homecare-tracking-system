@@ -1553,6 +1553,7 @@ function exportBillingSummary() {
 //  個案地圖
 // ==========================================
 let caseMapInstance = null;
+let caseMapMarkers = [];
 const DISTRICT_COORDS = {
   '桃園區':[24.9936,121.3010],'中壢區':[24.9656,121.2249],'平鎮區':[24.9457,121.2183],
   '八德區':[24.9527,121.2855],'楊梅區':[24.9077,121.1455],'蘆竹區':[25.0457,121.2920],
@@ -1560,6 +1561,41 @@ const DISTRICT_COORDS = {
   '大園區':[25.0629,121.1975],'觀音區':[25.0335,121.0835],'新屋區':[24.9721,121.1062],
   '復興區':[24.8208,121.3530]
 };
+const CMS_COLORS = {
+  '第1級':'#4CAF50','第2級':'#8BC34A','第3級':'#CDDC39','第4級':'#FFC107',
+  '第5級':'#FF9800','第6級':'#FF5722','第7級':'#E91E63','第8級':'#9C27B0'
+};
+
+// 地理編碼快取 (存 localStorage)
+function getGeoCache() {
+  try { return JSON.parse(localStorage.getItem('geocache') || '{}'); } catch { return {}; }
+}
+function setGeoCache(cache) {
+  localStorage.setItem('geocache', JSON.stringify(cache));
+}
+
+function initCaseMap() {
+  const container = document.getElementById('casemap-container');
+  if (!container || caseMapInstance) return;
+  caseMapInstance = L.map(container, { zoomControl: true }).setView([24.99, 121.25], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>',
+    maxZoom: 19
+  }).addTo(caseMapInstance);
+
+  // 圖例
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = function() {
+    const div = L.DomUtil.create('div', 'leaflet-control');
+    div.style.cssText = 'background:#fff;padding:8px 12px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.2);font-size:0.8rem;line-height:1.8';
+    div.innerHTML = '<strong>CMS 等級</strong><br>' +
+      Object.entries(CMS_COLORS).map(([k,v]) =>
+        `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${v};margin-right:4px;vertical-align:middle"></span>${k}`
+      ).join('<br>');
+    return div;
+  };
+  legend.addTo(caseMapInstance);
+}
 
 function renderCaseMap() {
   const active = getActiveCases(db);
@@ -1592,84 +1628,152 @@ function renderCaseMap() {
 
   document.getElementById('casemap-count').textContent = `顯示 ${filtered.length} / ${active.length} 個案`;
 
-  const container = document.getElementById('casemap-container');
-  if (!container) return;
-
-  if (!caseMapInstance) {
-    caseMapInstance = L.map(container).setView([24.99, 121.25], 12);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap',
-      maxZoom: 18
-    }).addTo(caseMapInstance);
-    // 修正 Leaflet resize issue
-    setTimeout(() => caseMapInstance.invalidateSize(), 200);
-  }
+  // 初始化地圖
+  initCaseMap();
+  if (!caseMapInstance) return;
+  setTimeout(() => caseMapInstance.invalidateSize(), 100);
 
   // 清除舊 markers
-  caseMapInstance.eachLayer(l => { if (l instanceof L.Marker || l instanceof L.CircleMarker) caseMapInstance.removeLayer(l); });
+  caseMapMarkers.forEach(m => caseMapInstance.removeLayer(m));
+  caseMapMarkers = [];
 
-  // CMS 等級顏色
-  const cmsColors = {
-    '第1級':'#4CAF50','第2級':'#8BC34A','第3級':'#CDDC39','第4級':'#FFC107',
-    '第5級':'#FF9800','第6級':'#FF5722','第7級':'#E91E63','第8級':'#9C27B0'
-  };
+  const geoCache = getGeoCache();
+  let geocoded = 0, fallback = 0;
 
-  // 依行政區分群
-  const districtGroups = {};
-  filtered.forEach(c => {
-    const dist = c.district || '未知';
-    if (!districtGroups[dist]) districtGroups[dist] = [];
-    districtGroups[dist].push(c);
+  filtered.forEach((c, idx) => {
+    let lat, lng;
+    const cacheKey = c.address || '';
+
+    // 優先使用個案已存的座標
+    if (c.lat && c.lng) {
+      lat = c.lat; lng = c.lng;
+      geocoded++;
+    }
+    // 其次使用地理編碼快取
+    else if (cacheKey && geoCache[cacheKey]) {
+      lat = geoCache[cacheKey][0]; lng = geoCache[cacheKey][1];
+      geocoded++;
+    }
+    // 最後退回行政區中心 + 散布
+    else {
+      const dist = c.district || '';
+      const baseCoord = DISTRICT_COORDS[dist];
+      if (!baseCoord) return;
+      const angle = (idx * 2.399) + (c.id ? c.id.charCodeAt(c.id.length-1)*0.1 : 0); // golden angle spread
+      const spread = 0.006;
+      const r = spread * Math.sqrt((idx % 50) / 50);
+      lat = baseCoord[0] + r * Math.cos(angle);
+      lng = baseCoord[1] + r * Math.sin(angle);
+      fallback++;
+    }
+
+    const color = CMS_COLORS[c.cmsLevel] || '#999';
+    const doctor = findMember(db, c.doctorId);
+    const isGeocoded = (c.lat && c.lng) || (cacheKey && geoCache[cacheKey]);
+
+    const marker = L.circleMarker([lat, lng], {
+      radius: isGeocoded ? 8 : 6,
+      fillColor: color, color: isGeocoded ? '#333' : '#fff',
+      weight: isGeocoded ? 2 : 1, fillOpacity: 0.85
+    }).addTo(caseMapInstance);
+
+    marker.bindPopup(`
+      <div style="min-width:200px;line-height:1.6">
+        <strong style="font-size:1.05rem">${esc(c.name)}</strong>
+        <span style="background:${color};color:#fff;padding:1px 6px;border-radius:4px;font-size:0.75rem;margin-left:4px">${c.cmsLevel || '-'}</span>
+        ${isGeocoded ? '<span style="color:#4CAF50;font-size:0.7rem;margin-left:4px">📍已定位</span>' : '<span style="color:#999;font-size:0.7rem;margin-left:4px">⚬ 約略位置</span>'}
+        <br>🏠 ${esc(c.address || c.district || '-')}
+        <br>👨‍⚕️ ${doctor ? esc(doctor.name) : (c.doctorName || '-')}
+        <br>📅 收案 ${c.enrollDate || '-'}
+        ${c.phone ? `<br>📞 ${esc(c.phone)}` : ''}
+      </div>
+    `);
+    caseMapMarkers.push(marker);
   });
 
-  Object.entries(districtGroups).forEach(([dist, cases]) => {
-    const baseCoord = DISTRICT_COORDS[dist];
-    if (!baseCoord) return;
-    cases.forEach((c, idx) => {
-      // 散布個案位置，避免重疊
-      const angle = (idx / cases.length) * 2 * Math.PI;
-      const spread = Math.min(cases.length * 0.0003, 0.008);
-      const r = spread * Math.sqrt(Math.random());
-      const lat = baseCoord[0] + r * Math.cos(angle + Math.random() * 0.5);
-      const lng = baseCoord[1] + r * Math.sin(angle + Math.random() * 0.5);
-
-      const color = cmsColors[c.cmsLevel] || '#999';
-      const doctor = findMember(db, c.doctorId);
-      const marker = L.circleMarker([lat, lng], {
-        radius: 7, fillColor: color, color: '#fff', weight: 1.5,
-        fillOpacity: 0.85
-      }).addTo(caseMapInstance);
-
-      marker.bindPopup(`
-        <div style="min-width:180px">
-          <strong style="font-size:1.05rem">${esc(c.name)}</strong>
-          <span style="background:${color};color:#fff;padding:1px 6px;border-radius:4px;font-size:0.75rem;margin-left:4px">${c.cmsLevel || '-'}</span>
-          <br><span style="color:#666">📍 ${esc(c.district || '-')} ${esc(c.village || '')}</span>
-          <br><span style="color:#666">👨‍⚕️ ${doctor ? esc(doctor.name) : (c.doctorName || '-')}</span>
-          <br><span style="color:#666">📅 收案 ${c.enrollDate || '-'}</span>
-          ${c.address ? `<br><span style="color:#888;font-size:0.8rem">🏠 ${esc(c.address)}</span>` : ''}
-        </div>
-      `);
-    });
-  });
-
-  // 加圖例
-  if (!caseMapInstance._legendAdded) {
-    const legend = L.control({ position: 'bottomright' });
-    legend.onAdd = function() {
-      const div = L.DomUtil.create('div', 'leaflet-control');
-      div.style.cssText = 'background:#fff;padding:8px 12px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.2);font-size:0.8rem;line-height:1.6';
-      div.innerHTML = '<strong>CMS 等級</strong><br>' +
-        Object.entries(cmsColors).map(([k,v]) =>
-          `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${v};margin-right:4px;vertical-align:middle"></span>${k}`
-        ).join('<br>');
-      return div;
-    };
-    legend.addTo(caseMapInstance);
-    caseMapInstance._legendAdded = true;
+  // 更新地理編碼狀態
+  const bar = document.getElementById('casemap-geocode-bar');
+  if (bar) {
+    bar.style.display = 'flex';
+    document.getElementById('casemap-geocode-status').innerHTML =
+      `<span class="badge badge-success">已定位 ${geocoded}</span> ` +
+      `<span class="badge badge-gray">約略位置 ${fallback}</span> ` +
+      (fallback > 0 ? '<span style="color:#999">← 點「📍 地址定位」可精確定位</span>' : '<span style="color:#4CAF50">✓ 全部已精確定位</span>');
   }
 
-  setTimeout(() => caseMapInstance.invalidateSize(), 300);
+  // fit bounds
+  if (caseMapMarkers.length > 0) {
+    const group = L.featureGroup(caseMapMarkers);
+    caseMapInstance.fitBounds(group.getBounds().pad(0.1));
+  }
+}
+
+// 使用 Nominatim 批次地理編碼
+async function geocodeAllCases() {
+  const btn = document.getElementById('btn-geocode');
+  const bar = document.getElementById('casemap-geocode-bar');
+  const statusEl = document.getElementById('casemap-geocode-status');
+  if (!bar || !statusEl) return;
+  bar.style.display = 'flex';
+  btn.disabled = true;
+  btn.textContent = '⏳ 定位中...';
+
+  const active = getActiveCases(db);
+  const geoCache = getGeoCache();
+  const toGeocode = active.filter(c => c.address && !c.lat && !geoCache[c.address]);
+
+  if (toGeocode.length === 0) {
+    statusEl.innerHTML = '<span style="color:#4CAF50">✓ 所有有地址的個案都已定位</span>';
+    btn.disabled = false; btn.textContent = '📍 地址定位';
+    return;
+  }
+
+  let done = 0, success = 0, fail = 0;
+  statusEl.textContent = `正在定位 0 / ${toGeocode.length} ...`;
+
+  for (const c of toGeocode) {
+    try {
+      // Nominatim rate limit: 1 req/sec
+      const addr = encodeURIComponent(c.address);
+      const resp = await fetch(`https://nominatim.openstreetmap.org/search?q=${addr}&format=json&limit=1&countrycodes=tw`, {
+        headers: { 'Accept-Language': 'zh-TW' }
+      });
+      const results = await resp.json();
+      if (results.length > 0) {
+        const lat = parseFloat(results[0].lat);
+        const lng = parseFloat(results[0].lon);
+        c.lat = lat; c.lng = lng;
+        geoCache[c.address] = [lat, lng];
+        success++;
+      } else {
+        // 嘗試簡化地址再查詢
+        const simpleAddr = c.address.replace(/\d+巷\d+弄\d+號.*/, '').replace(/\d+號.*/, '').replace(/之\d+/, '');
+        if (simpleAddr !== c.address && simpleAddr.length > 6) {
+          const resp2 = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(simpleAddr)}&format=json&limit=1&countrycodes=tw`);
+          const r2 = await resp2.json();
+          if (r2.length > 0) {
+            const lat = parseFloat(r2[0].lat);
+            const lng = parseFloat(r2[0].lon);
+            c.lat = lat; c.lng = lng;
+            geoCache[c.address] = [lat, lng];
+            success++;
+          } else { fail++; }
+          await new Promise(r => setTimeout(r, 1100));
+        } else { fail++; }
+      }
+    } catch (e) { fail++; }
+
+    done++;
+    statusEl.textContent = `正在定位 ${done} / ${toGeocode.length} (成功 ${success}, 失敗 ${fail})...`;
+    // Nominatim rate limit
+    await new Promise(r => setTimeout(r, 1100));
+  }
+
+  setGeoCache(geoCache);
+  saveDB(db);
+  statusEl.innerHTML = `<span style="color:#4CAF50">✓ 定位完成：成功 ${success}，失敗 ${fail}</span>`;
+  btn.disabled = false; btn.textContent = '📍 地址定位';
+  renderCaseMap();
 }
 
 function computeKPI(doctorFilter) {
