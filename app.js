@@ -1694,7 +1694,9 @@ function renderCaseMap() {
       const ck = getCaseGeoAddress(c);
       if (ck) gc[ck] = [pos.lat, pos.lng];
       setGeoCache(gc);
-      saveDB(db);
+      // 直接同步此個案到伺服器（不依賴 debounce）
+      localStorage.setItem(DB_KEY, JSON.stringify(db));
+      if (c.id) apiCall('PUT', `/api/data/cases/${c.id}`, c).catch(e => console.error('座標儲存失敗:', e));
       showToast(`${c.name} 位置已更新`);
     });
 
@@ -1760,7 +1762,8 @@ function addCasePin(c) {
     const ck = getCaseGeoAddress(c);
     if (ck) gc[ck] = [pos.lat, pos.lng];
     setGeoCache(gc);
-    saveDB(db);
+    localStorage.setItem(DB_KEY, JSON.stringify(db));
+    if (c.id) apiCall('PUT', `/api/data/cases/${c.id}`, c).catch(e => console.error('座標儲存失敗:', e));
     showToast(`${c.name} 位置已更新`);
   });
   marker.bindPopup(`
@@ -1900,15 +1903,20 @@ async function geocodeAllCases() {
     done++;
     statusEl.textContent = `正在定位 ${done} / ${toGeocode.length} (成功 ${success}, 失敗 ${fail})...`;
 
-    // 每 20 筆存檔一次
-    if (done % 20 === 0) { setGeoCache(geoCache); saveDB(db); }
+    // 每 20 筆存檔一次（含同步到伺服器）
+    if (done % 20 === 0) {
+      setGeoCache(geoCache);
+      localStorage.setItem(DB_KEY, JSON.stringify(db));
+      syncDataToBackend(db).catch(e => console.error('批次同步失敗:', e));
+    }
 
     // Nominatim rate limit: 1 req/sec
     await new Promise(r => setTimeout(r, 1100));
   }
 
   setGeoCache(geoCache);
-  saveDB(db);
+  localStorage.setItem(DB_KEY, JSON.stringify(db));
+  await syncDataToBackend(db).catch(e => console.error('最終同步失敗:', e));
   statusEl.innerHTML = `<span style="color:#4CAF50">✓ 定位完成：成功 ${success}，失敗 ${fail}</span>`;
   btn.disabled = false; btn.textContent = '📍 地址定位';
   renderCaseMap();
