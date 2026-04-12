@@ -1683,7 +1683,11 @@ function renderCaseMap() {
     // 最後退回行政區中心 + 散布（所有個案都必須顯示）
     else {
       const dist = c.district || '';
-      const baseCoord = DISTRICT_COORDS[dist] || DISTRICT_COORDS['桃園區'] || [24.9936, 121.3010];
+      // 彈性匹配：「桃園」→「桃園區」
+      const baseCoord = DISTRICT_COORDS[dist]
+        || DISTRICT_COORDS[dist + '區']
+        || (Object.entries(DISTRICT_COORDS).find(([k]) => k.startsWith(dist) || dist.startsWith(k.replace('區','')))?.[1])
+        || [24.9936, 121.3010];
       const angle = (idx * 2.399) + (c.id ? c.id.charCodeAt(c.id.length-1)*0.1 : 0);
       const spread = 0.006;
       const r = spread * Math.sqrt((idx % 50) / 50);
@@ -1768,6 +1772,14 @@ function renderCaseMap() {
   if (caseMapMarkers.length > 0) {
     const group = L.featureGroup(caseMapMarkers);
     caseMapInstance.fitBounds(group.getBounds().pad(0.1));
+  }
+
+  // 如果超過一半未定位，自動開始定位
+  if (fallback > geocoded && fallback > 10 && !window._autoGeoRunning) {
+    window._autoGeoRunning = true;
+    setTimeout(() => {
+      geocodeAllCases().finally(() => { window._autoGeoRunning = false; });
+    }, 1000);
   }
 }
 
