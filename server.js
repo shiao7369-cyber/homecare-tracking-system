@@ -339,10 +339,23 @@ app.post('/api/sso', async (req, res) => {
     // Check expiry (30 seconds)
     if (Date.now() - payload.iat > 30000) return res.status(401).json({ error: 'Token 已過期' });
 
-    // Find user by username
+    // Find or auto-create user by username
     const users = await loadUsers();
-    const user = users.find(u => u.username === payload.username && u.status === 'active');
-    if (!user) return res.status(401).json({ error: '使用者不存在' });
+    let user = users.find(u => u.username === payload.username && u.status === 'active');
+    if (!user) {
+      // Auto-create user from SSO payload
+      user = {
+        id: crypto.randomUUID(),
+        username: payload.username,
+        password: bcrypt.hashSync(crypto.randomUUID(), BCRYPT_ROUNDS),
+        displayName: payload.displayName || payload.username,
+        role: payload.role || 'user',
+        status: 'active',
+        createdAt: new Date().toISOString()
+      };
+      await saveUser(user);
+      auditLog('SSO_USER_CREATED', user.id, { ip: req.ip, msg: `SSO auto-created: ${user.username}` });
+    }
 
     // Create session (same as login)
     const sessionToken = createSession(user);
