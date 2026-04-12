@@ -26,12 +26,25 @@ let authToken = null;
   }
 })();
 
-async function apiCall(method, url, body) {
+async function apiCall(method, url, body, _retried) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   const data = await res.json();
+  if (res.status === 401 && !_retried && url !== '/api/auto-login') {
+    // Session 過期，嘗試自動重新登入後重試
+    try {
+      const loginData = await apiCall('POST', '/api/auto-login', null, true);
+      authToken = loginData.token;
+      currentUser = loginData.user;
+      sessionStorage.setItem('auth_token', authToken);
+      sessionStorage.setItem('auth_token_time', String(Date.now()));
+      return apiCall(method, url, body, true);
+    } catch (e) {
+      throw new Error(data.error || '請求失敗');
+    }
+  }
   if (!res.ok) throw new Error(data.error || '請求失敗');
   return data;
 }
