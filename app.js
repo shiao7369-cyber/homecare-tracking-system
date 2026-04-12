@@ -3086,36 +3086,45 @@ function _buildAndDrawRoute(dateStr, filterDoc) {
 
   if (dayVisits.length === 0) { showToast('該日無訪視排程', 'warning'); return; }
 
-  // 此時 renderCaseMap 已經從 geocache 補好了座標
-  // 再額外嘗試用多種方式查找座標
+  // 此時 renderCaseMap 已從 geocache 補好座標（lat/lng 或 _fallbackLat/_fallbackLng）
   const geoCache = getGeoCache();
   const visitCases = dayVisits.map(v => {
     const c = findCase(db, v.caseId);
     let lat = c?.lat, lng = c?.lng;
 
+    // 從 geocache 補齊
     if ((!lat || !lng) && c) {
-      // 方法1：用 getCaseGeoAddress 查 geocache
       const cacheKey = getCaseGeoAddress(c);
       if (cacheKey && geoCache[cacheKey]) {
         lat = geoCache[cacheKey][0]; lng = geoCache[cacheKey][1];
       }
-      // 方法2：用原始地址查 geocache
       if ((!lat || !lng) && c.address && geoCache[c.address]) {
         lat = geoCache[c.address][0]; lng = geoCache[c.address][1];
       }
-      // 方法3：遍歷 geocache 找包含該地址的 key
       if ((!lat || !lng) && c.address) {
         const addrPart = c.address.replace(/桃園市/, '').replace(/\d+[樓Ff].*$/, '').trim();
-        for (const [key, val] of Object.entries(geoCache)) {
-          if (key.includes(addrPart) || addrPart.includes(key)) {
-            lat = val[0]; lng = val[1]; break;
+        if (addrPart.length > 2) {
+          for (const [key, val] of Object.entries(geoCache)) {
+            if (key.includes(addrPart) || addrPart.includes(key)) {
+              lat = val[0]; lng = val[1]; break;
+            }
           }
         }
       }
       if (lat && lng) { c.lat = lat; c.lng = lng; }
     }
 
-    return { visit: v, case: c, lat, lng, name: c?.name || v.caseName, address: c?.address || c?.district || '' };
+    // 最後手段：用 renderCaseMap 產生的約略位置（行政區中心附近）
+    if ((!lat || !lng) && c) {
+      lat = c._fallbackLat; lng = c._fallbackLng;
+    }
+
+    return {
+      visit: v, case: c, lat, lng,
+      name: c?.name || v.caseName,
+      address: c?.address || c?.district || '',
+      approx: !(c?.lat && c?.lng) // 標記是否為約略位置
+    };
   });
 
   const withCoords = visitCases.filter(vc => vc.lat && vc.lng);
@@ -3162,7 +3171,8 @@ async function _drawVisitRouteOnMap() {
         <span style="color:var(--gray-400)">路線計算中...</span>
       </div>
       <div class="visit-route-stops" id="visit-route-stops"></div>
-      ${noCoords.length > 0 ? `<div class="visit-route-warn">⚠️ 未定位：${noCoords.map(vc => vc.name).join('、')}</div>` : ''}
+      ${noCoords.length > 0 ? `<div class="visit-route-warn">⚠️ 無法定位：${noCoords.map(vc => vc.name).join('、')}</div>` : ''}
+      ${visitCases.some(vc => vc.approx) ? `<div class="visit-route-warn" style="color:#d97706">📍 標示 ⚠ 者為約略位置，建議先進行地址定位以提高路線精確度</div>` : ''}
     </div>`;
   panel.style.display = 'block';
 
@@ -3350,7 +3360,7 @@ function _renderRouteStops(visitCases, legData) {
     html += `<div class="route-stop-card" onclick="_zoomToStop(${i})">
       <div class="route-stop-num" style="background:${color}">${i + 1}</div>
       <div class="route-stop-detail">
-        <div class="route-stop-name">${esc(vc.name)}</div>
+        <div class="route-stop-name">${esc(vc.name)}${vc.approx ? ' <span style="color:#d97706;font-size:0.75rem">⚠ 約略</span>' : ''}</div>
         <div class="route-stop-addr">${typeIcon} ${esc(vc.address)}</div>
         <div class="route-stop-doc">👨‍⚕️ ${doc ? esc(doc.name) : '-'} ・ ${vc.visit.duration||30}分鐘</div>
       </div>
