@@ -1719,6 +1719,8 @@ function renderCaseMap() {
         <div style="margin-top:6px;color:#999;font-size:0.75rem">💡 可拖拉圖釘修正位置</div>
       </div>
     `);
+    marker.on('mouseover', function() { this.openPopup(); });
+    marker.on('mouseout', function() { this.closePopup(); });
     caseMapMarkers.push(marker);
   });
 
@@ -1780,6 +1782,8 @@ function addCasePin(c) {
       <div style="margin-top:6px;color:#999;font-size:0.75rem">💡 可拖拉圖釘修正位置</div>
     </div>
   `);
+  marker.on('mouseover', function() { this.openPopup(); });
+  marker.on('mouseout', function() { this.closePopup(); });
   caseMapMarkers.push(marker);
 }
 
