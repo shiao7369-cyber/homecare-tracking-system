@@ -1726,6 +1726,39 @@ function renderCaseMap() {
   }
 }
 
+// 在地圖上新增單一個案圖釘
+function addCasePin(c) {
+  if (!caseMapInstance || !c.lat || !c.lng) return;
+  const color = CMS_COLORS[c.cmsLevel] || '#E53935';
+  const doctor = findMember(db, c.doctorId);
+  const label = `${c.caseNo || c.id} ${c.name}`;
+  const pinSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="40" viewBox="0 0 28 40">
+    <path d="M14 0C6.27 0 0 6.27 0 14c0 10.5 14 26 14 26s14-15.5 14-26C28 6.27 21.73 0 14 0z" fill="${color}" stroke="#fff" stroke-width="1.5"/>
+    <circle cx="14" cy="13" r="5.5" fill="#fff" opacity="0.9"/>
+  </svg>`;
+  const pinIcon = L.divIcon({
+    html: pinSvg, className: 'casemap-pin',
+    iconSize: [28, 40], iconAnchor: [14, 40], popupAnchor: [0, -36]
+  });
+  const marker = L.marker([c.lat, c.lng], { icon: pinIcon }).addTo(caseMapInstance);
+  marker.bindTooltip(label, {
+    permanent: true, direction: 'right', offset: [12, -20], className: 'casemap-label'
+  });
+  marker.bindPopup(`
+    <div style="min-width:220px;line-height:1.7;font-size:0.9rem">
+      <div style="font-size:1.1rem;font-weight:700;margin-bottom:4px">${esc(c.name)}
+        <span style="background:${color};color:#fff;padding:1px 8px;border-radius:4px;font-size:0.75rem;margin-left:6px">${c.cmsLevel || '-'}</span>
+      </div>
+      <div>📋 ${esc(c.caseNo || c.id)}</div>
+      <div>🏠 ${esc(c.address || (c.district ? '桃園市' + c.district + (c.village||'') : '-'))}</div>
+      <div>👨‍⚕️ ${doctor ? esc(doctor.name) : (c.doctorName || '-')}</div>
+      <div>📅 收案 ${c.enrollDate || '-'}</div>
+      ${c.phone ? `<div>📞 ${esc(c.phone)}</div>` : ''}
+    </div>
+  `);
+  caseMapMarkers.push(marker);
+}
+
 // 地理編碼單一地址（透過 server proxy）
 async function geocodeAddress(addr) {
   try {
@@ -1804,12 +1837,18 @@ async function geocodeAllCases() {
       c.lat = result.lat; c.lng = result.lng;
       geoCache[addr] = [result.lat, result.lng];
       success++;
+      // 即時在地圖上加入圖釘
+      if (caseMapInstance) addCasePin(c);
     } else {
       fail++;
     }
 
     done++;
     statusEl.textContent = `正在定位 ${done} / ${toGeocode.length} (成功 ${success}, 失敗 ${fail})...`;
+
+    // 每 20 筆存檔一次
+    if (done % 20 === 0) { setGeoCache(geoCache); saveDB(db); }
+
     // Nominatim rate limit: 1 req/sec
     await new Promise(r => setTimeout(r, 1100));
   }
