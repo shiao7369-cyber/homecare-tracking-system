@@ -224,24 +224,6 @@ function renderDashboard() {
   document.getElementById('stat-alerts').textContent = dangerCount;
   updateAlertBadge();
 
-  // KPI Bars
-  const kpiData = computeKPI();
-  const kpiContainer = document.getElementById('dashboard-kpi-bars');
-  kpiContainer.innerHTML = kpiData.map(k => {
-    const pct = Math.min(100, k.value);
-    const color = k.value >= k.target ? 'var(--success)' : (k.value >= k.target * 0.7 ? 'var(--warning)' : 'var(--danger)');
-    return `<div class="kpi-bar-item">
-      <div class="kpi-bar-header">
-        <span class="kpi-bar-label">${k.label}</span>
-        <span class="kpi-bar-values">${k.value.toFixed(1)}% / 目標 ${k.target}%</span>
-      </div>
-      <div class="kpi-bar-track">
-        <div class="kpi-bar-fill" style="width:${pct}%;background:${color}">${k.value.toFixed(0)}%</div>
-        <div class="kpi-bar-target" style="left:${k.target}%" data-label="目標${k.target}%"></div>
-      </div>
-    </div>`;
-  }).join('');
-
   // Doctor Load
   const loadContainer = document.getElementById('doctor-load-chart');
   loadContainer.innerHTML = docs.map(d => {
