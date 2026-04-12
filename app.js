@@ -1774,12 +1774,23 @@ function renderCaseMap() {
     caseMapInstance.fitBounds(group.getBounds().pad(0.1));
   }
 
-  // 如果超過一半未定位，自動開始定位
-  if (fallback > geocoded && fallback > 10 && !window._autoGeoRunning) {
-    window._autoGeoRunning = true;
-    setTimeout(() => {
-      geocodeAllCases().finally(() => { window._autoGeoRunning = false; });
-    }, 1000);
+  // 只自動定位「新增的」未定位個案（有地址但沒座標也沒快取）
+  if (fallback > 0 && !window._autoGeoRunning) {
+    const geoC = getGeoCache();
+    const newCases = filtered.filter(c => {
+      if (c.lat && c.lng) return false;
+      const addr = getCaseGeoAddress(c);
+      if (!addr) return false;
+      if (geoC[addr]) return false;
+      return true;
+    });
+    if (newCases.length > 0 && newCases.length <= 30) {
+      // 只有少量新個案才自動定位
+      window._autoGeoRunning = true;
+      setTimeout(() => {
+        geocodeNewCases(newCases).finally(() => { window._autoGeoRunning = false; });
+      }, 500);
+    }
   }
 }
 
@@ -1901,7 +1912,32 @@ function resetGeocode() {
   showToast(`已清除定位快取${cleaned ? `，已移除 ${cleaned} 筆地址中的里名` : ''}，請點「📍 地址定位」重新定位`);
 }
 
-// 批次地理編碼
+// 只定位新增的個案
+async function geocodeNewCases(cases) {
+  const statusEl = document.getElementById('casemap-geocode-status');
+  const geoCache = getGeoCache();
+  let success = 0, fail = 0;
+  if (statusEl) statusEl.textContent = `正在定位 ${cases.length} 個新個案...`;
+
+  for (const c of cases) {
+    const cacheKey = getCaseGeoAddress(c);
+    const result = await geocodeAddress(cacheKey);
+    if (result) {
+      c.lat = result.lat; c.lng = result.lng;
+      geoCache[cacheKey] = [result.lat, result.lng];
+      if (caseMapInstance) addCasePin(c);
+      success++;
+    } else { fail++; }
+    await new Promise(r => setTimeout(r, 1100));
+  }
+  setGeoCache(geoCache);
+  localStorage.setItem(DB_KEY, JSON.stringify(db));
+  syncDataToBackend(db).catch(() => {});
+  if (statusEl) statusEl.textContent = `新個案定位完成：成功 ${success}，失敗 ${fail}`;
+  if (success > 0) renderCaseMap();
+}
+
+// 批次地理編碼（手動按鈕：只定位尚未定位的）
 async function geocodeAllCases() {
   const btn = document.getElementById('btn-geocode');
   const bar = document.getElementById('casemap-geocode-bar');
