@@ -1669,13 +1669,12 @@ function createCaseMarker(c) {
     const ck = getCaseGeoAddress(c);
     if (ck) gc[ck] = [pos.lat, pos.lng];
     setGeoCache(gc);
-    localStorage.setItem(DB_KEY, JSON.stringify(db));
-    if (c.id) apiCall('PUT', `/api/data/cases/${c.id}`, c).catch(e => console.error('座標儲存失敗:', e));
+    saveDB(db); // 同步到 localStorage + 伺服器
     showToast(`${c.name} 位置已更新`);
   });
   marker.on('mouseover', function() { this.openPopup(); });
   marker.on('mouseout', function() { this.closePopup(); });
-  marker._caseData = c; // 存參考供搜尋用
+  marker._caseData = c;
   return marker;
 }
 
@@ -1839,19 +1838,7 @@ function renderCaseMap() {
       (fallback > 0 ? '<span style="color:#999">← 點「📍 地址定位」可精確定位</span>' : '<span style="color:#4CAF50">✓ 全部已精確定位</span>');
   }
 
-  // 自動定位
-  if (fallback > 0 && !window._autoGeoRunning) {
-    const geoC = getGeoCache();
-    const newCases = filtered.filter(c => {
-      if (c.lat && c.lng) return false;
-      const addr = getCaseGeoAddress(c);
-      return addr && !geoC[addr];
-    });
-    if (newCases.length > 0) {
-      window._autoGeoRunning = true;
-      setTimeout(() => { geocodeAllCases().finally(() => { window._autoGeoRunning = false; }); }, 500);
-    }
-  }
+  // 不自動定位，僅在使用者按「📍 地址定位」時才執行
 }
 
 // ===== 圖釘模式（含 #2 Marker Clustering）=====
@@ -1891,8 +1878,7 @@ function renderPinMode(filtered) {
       const ck = getCaseGeoAddress(c);
       if (ck) gc[ck] = [pos.lat, pos.lng];
       setGeoCache(gc);
-      localStorage.setItem(DB_KEY, JSON.stringify(db));
-      if (c.id) apiCall('PUT', `/api/data/cases/${c.id}`, c).catch(() => {});
+      saveDB(db); // 同步到 localStorage + 伺服器
       showToast(`${c.name} 位置已更新`);
     });
     marker.on('mouseover', function() { this.openPopup(); });

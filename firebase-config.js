@@ -271,6 +271,30 @@ async function loadCloudData() {
       db = { members: _members, cases: cloudData.cases || [],
              opinions: cloudData.opinions || [], services: cloudData.services || [],
              billings: cloudData.billings || [], diseases: [] };
+      // 合併本地 geocache 座標：如果雲端個案沒有座標但本地快取有，回寫
+      try {
+        const geoCache = JSON.parse(localStorage.getItem('geocache') || '{}');
+        if (db.cases && Object.keys(geoCache).length > 0) {
+          db.cases.forEach(c => {
+            if (c.lat && c.lng) return; // 已有座標不覆蓋
+            // 嘗試用地址找快取
+            let addr = '';
+            if (c.address) {
+              addr = c.address.replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+                .replace(/[一二三四五六七八九十\d]+樓.*$/, '').replace(/\d+[fF].*$/, '')
+                .replace(/([區鄉鎮市])[^\s路街道巷弄號]{1,5}里(\d{1,3}鄰)?/g, '$1')
+                .replace(/[\u4e00-\u9fff]{1,5}里(\d{1,3}鄰)?$/, '')
+                .replace(/之\d+/, '').replace(/(號).*$/, '$1').trim();
+            } else if (c.district) {
+              addr = '桃園市' + c.district;
+            }
+            if (addr && geoCache[addr]) {
+              c.lat = geoCache[addr][0];
+              c.lng = geoCache[addr][1];
+            }
+          });
+        }
+      } catch(e) { /* geocache 合併失敗不影響主流程 */ }
     } else {
       // 伺服器無資料，嘗試從 localStorage 快取上傳
       const cached = localStorage.getItem(DB_KEY);
