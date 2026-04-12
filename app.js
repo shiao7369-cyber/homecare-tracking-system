@@ -1839,14 +1839,34 @@ function getCaseGeoAddress(c) {
   return addr.length > 3 ? addr : '';
 }
 
+// 移除地址中的「里」名（如「中興里」→ 刪除）
+function cleanAddressLi(addr) {
+  if (!addr) return addr;
+  // 匹配「區」後面、「路街道」前面的「X里」
+  return addr.replace(/([區鄉鎮市])([^\s路街道巷弄號]{1,4}里)/, '$1');
+}
+
+// 清除所有個案地址中的里名
+function cleanAllCaseAddresses() {
+  let count = 0;
+  db.cases.forEach(c => {
+    if (c.address) {
+      const cleaned = cleanAddressLi(c.address);
+      if (cleaned !== c.address) { c.address = cleaned; count++; }
+    }
+  });
+  return count;
+}
+
 // 清除定位快取，重新定位
 function resetGeocode() {
   if (!confirm('確定要清除所有定位快取並重新定位？')) return;
   localStorage.removeItem('geocache');
+  const cleaned = cleanAllCaseAddresses();
   getActiveCases(db).forEach(c => { delete c.lat; delete c.lng; });
   saveDB(db);
   renderCaseMap();
-  showToast('已清除定位快取，請點「📍 地址定位」重新定位');
+  showToast(`已清除定位快取${cleaned ? `，已移除 ${cleaned} 筆地址中的里名` : ''}，請點「📍 地址定位」重新定位`);
 }
 
 // 批次地理編碼
@@ -2604,7 +2624,7 @@ async function uploadLCMSFile(file) {
           caseNo: String(r[1] || '').trim(), name, idNumber,
           gender: String(r[5] || '').trim(),
           cmsLevel: cmsMatch ? parseInt(cmsMatch[1]) : null,
-          category, address: addr, district: distMatch ? distMatch[1] : '',
+          category, address: cleanAddressLi(addr), district: distMatch ? distMatch[1] : '',
           village: String(r[9] || '').trim(),
           contactPerson: String(r[10] || '').replace(/[\r\n]/g, ' ').trim(),
           phone: String(r[11] || '').replace(/[\r\n]/g, ' ').trim(),
@@ -2630,7 +2650,7 @@ async function uploadLCMSFile(file) {
               gender: String(r[5] || '').trim(),
               cmsLevel: cmsMatch ? parseInt(cmsMatch[1]) : null,
               category: String(r[6] || '').trim(),
-              address: String(r[8] || '').trim(),
+              address: cleanAddressLi(String(r[8] || '').trim()),
               village: String(r[9] || '').trim(),
               doctorName: String(r[13] || '').trim(),
               status: 'closed'
@@ -2874,7 +2894,7 @@ async function applySmartDiff() {
       id: 'C' + String(maxId + 1 + addedCount).padStart(3, '0'),
       caseNo: lc.caseNo || '', name: lc.name, idNumber: lc.idNumber,
       gender: lc.gender || '', cmsLevel: lc.cmsLevel, category: lc.category || '',
-      district: lc.district || '', village: lc.village || '', address: lc.address || '',
+      district: lc.district || '', village: lc.village || '', address: cleanAddressLi(lc.address || ''),
       status: lc.status === 'closed' ? 'closed' : 'active',
       doctorName: lc.doctorName || '', enrollDate: lc.enrollDate || '', age: lc.age,
       doctorVisitDate: lc.doctorVisitDate || '',
