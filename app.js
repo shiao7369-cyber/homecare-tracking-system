@@ -2241,17 +2241,17 @@ function showSmartDiffModal(diff) {
   }
 
   if (diff.possiblyClosed.length > 0) {
-    html += `<details style="margin-bottom:1rem;">
+    html += `<details open style="margin-bottom:1rem;">
       <summary style="font-weight:bold;font-size:1rem;cursor:pointer;color:#c62828;margin-bottom:0.5rem;">
         可能結案 (${diff.possiblyClosed.length}) — 系統中收案但 LCMS 無資料
       </summary>
       <div style="overflow-x:auto;">
         <table class="data-table" style="font-size:0.85rem;"><thead><tr>
-          <th><input type="checkbox" id="diff-close-all" onchange="toggleDiffCheckAll(this,'diff-close-chk')"></th>
+          <th><input type="checkbox" id="diff-close-all" onchange="toggleDiffCheckAll(this,'diff-close-chk')" checked></th>
           <th>姓名</th><th>身分證號</th><th>CMS</th><th>負責醫師</th><th>收案日期</th>
         </tr></thead><tbody>
           ${diff.possiblyClosed.map((c, i) => `<tr>
-            <td><input type="checkbox" class="diff-close-chk" data-idx="${i}"></td>
+            <td><input type="checkbox" class="diff-close-chk" data-idx="${i}" checked></td>
             <td>${esc(c.name || '-')}</td><td>${maskId(c.idNumber)}</td>
             <td>${c.cmsLevel || '-'}</td><td>${esc(c.doctorName || '-')}</td>
             <td>${esc(c.enrollDate || '-')}</td>
