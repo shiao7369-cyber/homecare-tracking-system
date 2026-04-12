@@ -2414,6 +2414,8 @@ async function geocodeAllCases() {
 // ==========================================
 const SCHEDULE_KEY = 'homecare_schedule';
 let _scheduleWeekStart = null; // 當週起始日（週一）
+let _scheduleViewMode = 'week'; // 'day' | 'week' | 'month'
+let _scheduleCurrentDate = null; // 日檢視用的日期
 
 function getScheduleData() {
   try { return JSON.parse(localStorage.getItem(SCHEDULE_KEY) || '[]'); } catch { return []; }
@@ -2435,12 +2437,50 @@ function getWeekStart(date) {
 }
 
 function scheduleNavToday() {
-  _scheduleWeekStart = getWeekStart(new Date());
+  const now = new Date();
+  _scheduleWeekStart = getWeekStart(now);
+  _scheduleCurrentDate = new Date(now); _scheduleCurrentDate.setHours(0,0,0,0);
   renderSchedule();
 }
 function scheduleNav(dir) {
-  if (!_scheduleWeekStart) _scheduleWeekStart = getWeekStart(new Date());
-  _scheduleWeekStart.setDate(_scheduleWeekStart.getDate() + dir * 7);
+  if (_scheduleViewMode === 'day') {
+    if (!_scheduleCurrentDate) { _scheduleCurrentDate = new Date(); _scheduleCurrentDate.setHours(0,0,0,0); }
+    _scheduleCurrentDate.setDate(_scheduleCurrentDate.getDate() + dir);
+    _scheduleWeekStart = getWeekStart(_scheduleCurrentDate);
+  } else if (_scheduleViewMode === 'month') {
+    if (!_scheduleWeekStart) _scheduleWeekStart = getWeekStart(new Date());
+    const ref = new Date(_scheduleWeekStart);
+    ref.setDate(15); // 移到月中避免跨月問題
+    ref.setMonth(ref.getMonth() + dir);
+    ref.setDate(1);
+    _scheduleWeekStart = getWeekStart(ref);
+    _scheduleCurrentDate = new Date(ref);
+  } else {
+    if (!_scheduleWeekStart) _scheduleWeekStart = getWeekStart(new Date());
+    _scheduleWeekStart.setDate(_scheduleWeekStart.getDate() + dir * 7);
+    if (!_scheduleCurrentDate) _scheduleCurrentDate = new Date(_scheduleWeekStart);
+  }
+  renderSchedule();
+}
+
+function jumpToDay(dateStr) {
+  _scheduleCurrentDate = new Date(dateStr + 'T00:00:00');
+  _scheduleWeekStart = getWeekStart(_scheduleCurrentDate);
+  _scheduleViewMode = 'day';
+  document.querySelectorAll('#schedule-view-btns button').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('sv-btn-day');
+  if (btn) btn.classList.add('active');
+  renderSchedule();
+}
+
+function switchScheduleView(mode) {
+  _scheduleViewMode = mode;
+  document.querySelectorAll('#schedule-view-btns button').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('sv-btn-' + mode);
+  if (btn) btn.classList.add('active');
+  // 確保日期初始化
+  if (!_scheduleCurrentDate) { _scheduleCurrentDate = new Date(); _scheduleCurrentDate.setHours(0,0,0,0); }
+  if (!_scheduleWeekStart) _scheduleWeekStart = getWeekStart(_scheduleCurrentDate);
   renderSchedule();
 }
 
@@ -2453,6 +2493,7 @@ const WEEKDAY_NAMES = ['一','二','三','四','五','六','日'];
 
 function renderSchedule() {
   if (!_scheduleWeekStart) _scheduleWeekStart = getWeekStart(new Date());
+  if (!_scheduleCurrentDate) { _scheduleCurrentDate = new Date(); _scheduleCurrentDate.setHours(0,0,0,0); }
   const container = document.getElementById('schedule-container');
   if (!container) return;
 
@@ -2463,58 +2504,70 @@ function renderSchedule() {
       docSel.add(new Option(d.name, d.id));
     });
   }
-  const filterDoc = docSel?.value || '';
 
+  if (_scheduleViewMode === 'day') { renderScheduleDay(container); return; }
+  if (_scheduleViewMode === 'month') { renderScheduleMonth(container); return; }
+  renderScheduleWeek(container);
+}
+
+/* ---- 共用：醫師顏色 & 統計 ---- */
+function _scheduleDocSetup() {
+  const doctors = getDoctors(db).filter(d => d.status === 'active');
+  const docColorMap = {};
+  const DOC_COLORS = ['#2563eb','#16a34a','#d97706','#db2777','#4f46e5','#0891b2','#7c3aed','#dc2626'];
+  doctors.forEach((d, i) => { docColorMap[d.id] = i % 8; });
+  return { doctors, docColorMap, DOC_COLORS };
+}
+function _visitCardHtml(v, docColorMap) {
+  const c = findCase(db, v.caseId);
+  const cName = c ? c.name : v.caseName || '?';
+  const cAddr = c ? (c.address || c.district || '') : '';
+  const docIdx = docColorMap[v.doctorId] ?? 0;
+  const doc = findMember(db, v.doctorId);
+  const endTime = addMinutes(v.time, v.duration || 30);
+  return `<div class="visit-card visit-doctor-${docIdx}" onclick="event.stopPropagation();openVisitDetail('${v.id}')" title="${esc(cName)} ${v.time}-${endTime}">
+    <div class="visit-name">${esc(cName)}</div>
+    <div class="visit-time">${v.time}-${endTime} ${doc ? esc(doc.name) : ''}</div>
+    ${cAddr ? `<div class="visit-addr">📍 ${esc(cAddr.substring(0,15))}</div>` : ''}
+    <span class="visit-del" onclick="event.stopPropagation();deleteVisit('${v.id}')" title="刪除">✕</span>
+  </div>`;
+}
+
+/* ============ 週檢視 ============ */
+function renderScheduleWeek(container) {
+  const filterDoc = document.getElementById('schedule-doctor')?.value || '';
   const schedules = getScheduleData();
   const today = new Date(); today.setHours(0,0,0,0);
+  const { doctors, docColorMap, DOC_COLORS } = _scheduleDocSetup();
   const weekDates = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(_scheduleWeekStart);
-    d.setDate(d.getDate() + i);
-    weekDates.push(d);
-  }
+  for (let i = 0; i < 7; i++) { const d = new Date(_scheduleWeekStart); d.setDate(d.getDate() + i); weekDates.push(d); }
 
-  // 週標題
   const ws = _scheduleWeekStart;
   const we = new Date(ws); we.setDate(we.getDate() + 6);
   document.getElementById('schedule-week-label').textContent =
     `${ws.getFullYear()}/${ws.getMonth()+1}/${ws.getDate()} — ${we.getMonth()+1}/${we.getDate()}`;
 
-  // 統計
-  const weekVisits = schedules.filter(s => {
-    const sd = new Date(s.date);
-    return sd >= ws && sd <= we && (!filterDoc || s.doctorId === filterDoc);
-  });
-  const doctors = getDoctors(db).filter(d => d.status === 'active');
-  const docColorMap = {};
-  doctors.forEach((d, i) => { docColorMap[d.id] = i % 8; });
+  const weekVisits = schedules.filter(s => { const sd = new Date(s.date); return sd >= ws && sd <= we && (!filterDoc || s.doctorId === filterDoc); });
 
   let html = '<div class="schedule-stats">';
   html += `<span class="stat-item"><strong>本週訪視：${weekVisits.length} 筆</strong></span>`;
-  // 各醫師統計
   doctors.forEach((d, i) => {
     const cnt = weekVisits.filter(v => v.doctorId === d.id).length;
-    if (cnt > 0 || !filterDoc) {
-      html += `<span class="stat-item"><span class="stat-dot visit-doctor-${i % 8}" style="background:${['#2563eb','#16a34a','#d97706','#db2777','#4f46e5','#0891b2','#7c3aed','#dc2626'][i%8]}"></span>${esc(d.name)} ${cnt}</span>`;
-    }
+    if (cnt > 0 || !filterDoc) html += `<span class="stat-item"><span class="stat-dot visit-doctor-${i%8}" style="background:${DOC_COLORS[i%8]}"></span>${esc(d.name)} ${cnt}</span>`;
   });
   html += '</div>';
 
-  // 表格
   html += '<div class="schedule-grid">';
-  // 表頭
   html += '<div class="schedule-header" style="border-bottom:2px solid var(--gray-200)"></div>';
   weekDates.forEach(d => {
     const isToday = d.getTime() === today.getTime();
-    const dayStr = `${d.getMonth()+1}/${d.getDate()}`;
     html += `<div class="schedule-header${isToday ? ' today' : ''}">
-      <div>週${WEEKDAY_NAMES[d.getDay() === 0 ? 6 : d.getDay()-1]}</div>
+      <div>週${WEEKDAY_NAMES[d.getDay()===0?6:d.getDay()-1]}</div>
       <div class="day-num">${d.getDate()}</div>
       <div style="font-size:0.7rem;color:var(--gray-400)">${d.getMonth()+1}月</div>
     </div>`;
   });
 
-  // 時段
   SCHEDULE_SLOTS.forEach(slot => {
     html += `<div class="schedule-period-label">${slot.label}</div>`;
     slot.times.forEach(time => {
@@ -2522,28 +2575,160 @@ function renderSchedule() {
       weekDates.forEach(d => {
         const dateStr = fmt(d);
         const isToday = d.getTime() === today.getTime();
-        const cellVisits = schedules.filter(s =>
-          s.date === dateStr && s.time === time && (!filterDoc || s.doctorId === filterDoc)
-        );
+        const cellVisits = schedules.filter(s => s.date === dateStr && s.time === time && (!filterDoc || s.doctorId === filterDoc));
         html += `<div class="schedule-cell${isToday ? ' today' : ''}" onclick="openScheduleAdd('${dateStr}','${time}')" data-date="${dateStr}" data-time="${time}">`;
-        cellVisits.forEach(v => {
-          const c = findCase(db, v.caseId);
-          const cName = c ? c.name : v.caseName || '?';
-          const cAddr = c ? (c.address || c.district || '') : '';
-          const docIdx = docColorMap[v.doctorId] ?? 0;
-          const doc = findMember(db, v.doctorId);
-          const endTime = addMinutes(time, v.duration || 30);
-          html += `<div class="visit-card visit-doctor-${docIdx}" onclick="event.stopPropagation();openVisitDetail('${v.id}')" title="${esc(cName)} ${time}-${endTime}">
-            <div class="visit-name">${esc(cName)}</div>
-            <div class="visit-time">${time}-${endTime} ${doc ? esc(doc.name) : ''}</div>
-            ${cAddr ? `<div class="visit-addr">📍 ${esc(cAddr.substring(0,15))}</div>` : ''}
-            <span class="visit-del" onclick="event.stopPropagation();deleteVisit('${v.id}')" title="刪除">✕</span>
-          </div>`;
-        });
+        cellVisits.forEach(v => { html += _visitCardHtml(v, docColorMap); });
         html += '</div>';
       });
     });
   });
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+/* ============ 日檢視 ============ */
+function renderScheduleDay(container) {
+  const filterDoc = document.getElementById('schedule-doctor')?.value || '';
+  const schedules = getScheduleData();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const { doctors, docColorMap, DOC_COLORS } = _scheduleDocSetup();
+  const d = _scheduleCurrentDate;
+  const dateStr = fmt(d);
+  const isToday = d.getTime() === today.getTime();
+  const dayNames = ['日','一','二','三','四','五','六'];
+
+  document.getElementById('schedule-week-label').textContent =
+    `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日 （週${dayNames[d.getDay()]}）`;
+
+  const dayVisits = schedules.filter(s => s.date === dateStr && (!filterDoc || s.doctorId === filterDoc));
+
+  let html = '<div class="schedule-stats">';
+  html += `<span class="stat-item"><strong>當日訪視：${dayVisits.length} 筆</strong></span>`;
+  doctors.forEach((doc, i) => {
+    const cnt = dayVisits.filter(v => v.doctorId === doc.id).length;
+    if (cnt > 0 || !filterDoc) html += `<span class="stat-item"><span class="stat-dot visit-doctor-${i%8}" style="background:${DOC_COLORS[i%8]}"></span>${esc(doc.name)} ${cnt}</span>`;
+  });
+  html += '</div>';
+
+  // 日檢視使用單欄寬版，時段更詳細
+  html += '<div class="schedule-day-grid">';
+  SCHEDULE_SLOTS.forEach(slot => {
+    html += `<div class="schedule-day-period">${slot.label}</div>`;
+    slot.times.forEach(time => {
+      const cellVisits = schedules.filter(s => s.date === dateStr && s.time === time && (!filterDoc || s.doctorId === filterDoc));
+      const hasVisit = cellVisits.length > 0;
+      html += `<div class="schedule-day-row${isToday ? ' today' : ''}${hasVisit ? ' has-visit' : ''}" onclick="openScheduleAdd('${dateStr}','${time}')">`;
+      html += `<div class="schedule-day-time">${time}</div>`;
+      html += `<div class="schedule-day-content">`;
+      if (cellVisits.length === 0) {
+        html += `<div class="schedule-day-empty">點擊新增訪視</div>`;
+      }
+      cellVisits.forEach(v => {
+        const c = findCase(db, v.caseId);
+        const cName = c ? c.name : v.caseName || '?';
+        const cAddr = c ? (c.address || c.district || '') : '';
+        const docIdx = docColorMap[v.doctorId] ?? 0;
+        const doc = findMember(db, v.doctorId);
+        const endTime = addMinutes(v.time, v.duration || 30);
+        const typeLabel = { home:'🏠 到宅', phone:'📞 電話', video:'📹 視訊' }[v.type] || '';
+        const statusIcon = { scheduled:'', completed:'✅ ', cancelled:'❌ ' }[v.status] || '';
+        html += `<div class="visit-card-day visit-doctor-${docIdx}" onclick="event.stopPropagation();openVisitDetail('${v.id}')">
+          <div class="visit-day-main">
+            <span class="visit-name-lg">${statusIcon}${esc(cName)}</span>
+            <span class="visit-time-lg">${v.time} — ${endTime} (${v.duration||30}分)</span>
+          </div>
+          <div class="visit-day-detail">
+            <span>👨‍⚕️ ${doc ? esc(doc.name) : '-'}</span>
+            <span>${typeLabel}</span>
+            ${cAddr ? `<span>📍 ${esc(cAddr.substring(0,25))}</span>` : ''}
+            ${v.note ? `<span>📝 ${esc(v.note)}</span>` : ''}
+          </div>
+          <span class="visit-del" onclick="event.stopPropagation();deleteVisit('${v.id}')" title="刪除">✕</span>
+        </div>`;
+      });
+      html += '</div></div>';
+    });
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+/* ============ 月檢視 ============ */
+function renderScheduleMonth(container) {
+  const filterDoc = document.getElementById('schedule-doctor')?.value || '';
+  const schedules = getScheduleData();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const { doctors, docColorMap, DOC_COLORS } = _scheduleDocSetup();
+
+  // 當前月份
+  const refDate = _scheduleCurrentDate || _scheduleWeekStart;
+  const year = refDate.getFullYear();
+  const month = refDate.getMonth();
+
+  document.getElementById('schedule-week-label').textContent = `${year}年${month+1}月`;
+
+  // 計算月曆格子：從當月1號開始，填充到前一個週一
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+  const startDate = getWeekStart(firstDay); // 月曆起始（週一）
+  // 結束：填充到週日
+  const endDate = new Date(lastDay);
+  const endDow = endDate.getDay();
+  if (endDow !== 0) endDate.setDate(endDate.getDate() + (7 - endDow));
+
+  // 統計本月
+  const monthVisits = schedules.filter(s => {
+    const sd = new Date(s.date);
+    return sd.getFullYear() === year && sd.getMonth() === month && (!filterDoc || s.doctorId === filterDoc);
+  });
+
+  let html = '<div class="schedule-stats">';
+  html += `<span class="stat-item"><strong>本月訪視：${monthVisits.length} 筆</strong></span>`;
+  doctors.forEach((doc, i) => {
+    const cnt = monthVisits.filter(v => v.doctorId === doc.id).length;
+    if (cnt > 0 || !filterDoc) html += `<span class="stat-item"><span class="stat-dot visit-doctor-${i%8}" style="background:${DOC_COLORS[i%8]}"></span>${esc(doc.name)} ${cnt}</span>`;
+  });
+  html += '</div>';
+
+  // 月曆表格
+  html += '<div class="schedule-month-grid">';
+  // 星期表頭
+  ['一','二','三','四','五','六','日'].forEach(dn => {
+    html += `<div class="schedule-month-header">週${dn}</div>`;
+  });
+
+  // 填充日期格子
+  const cursor = new Date(startDate);
+  while (cursor <= endDate) {
+    const cDateStr = fmt(cursor);
+    const isCurrentMonth = cursor.getMonth() === month;
+    const isToday = cursor.getTime() === today.getTime();
+    const dayVisits = schedules.filter(s => s.date === cDateStr && (!filterDoc || s.doctorId === filterDoc));
+
+    html += `<div class="schedule-month-cell${isCurrentMonth ? '' : ' other-month'}${isToday ? ' today' : ''}" onclick="jumpToDay('${fmt(cursor)}')">`;
+    html += `<div class="month-day-num${isToday ? ' today-num' : ''}">${cursor.getDate()}</div>`;
+
+    if (dayVisits.length > 0) {
+      html += `<div class="month-day-visits">`;
+      // 最多顯示3筆
+      dayVisits.slice(0, 3).forEach(v => {
+        const c = findCase(db, v.caseId);
+        const cName = c ? c.name : v.caseName || '?';
+        const docIdx = docColorMap[v.doctorId] ?? 0;
+        const statusIcon = v.status === 'completed' ? '✅' : v.status === 'cancelled' ? '❌' : '';
+        html += `<div class="month-visit-item visit-doctor-${docIdx}" onclick="event.stopPropagation();openVisitDetail('${v.id}')" title="${v.time} ${esc(cName)}">
+          <span class="month-visit-time">${v.time}</span> ${statusIcon}${esc(cName.substring(0,4))}
+        </div>`;
+      });
+      if (dayVisits.length > 3) {
+        html += `<div class="month-visit-more">+${dayVisits.length - 3} 更多</div>`;
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    cursor.setDate(cursor.getDate() + 1);
+  }
 
   html += '</div>';
   container.innerHTML = html;

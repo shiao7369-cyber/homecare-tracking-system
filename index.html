@@ -126,6 +126,75 @@
   }
   .schedule-stats .stat-item { display:flex; align-items:center; gap:4px; }
   .schedule-stats .stat-dot { width:10px; height:10px; border-radius:50%; }
+
+  /* ===== 日檢視 ===== */
+  .schedule-day-grid { background:#fff; border:1px solid var(--gray-200); border-radius:10px; overflow:hidden; box-shadow:var(--shadow); }
+  .schedule-day-period {
+    background:var(--gray-50); padding:10px 16px; font-weight:700; font-size:0.9rem; color:var(--gray-500);
+    border-bottom:1px solid var(--gray-200); border-top:1px solid var(--gray-200);
+  }
+  .schedule-day-row {
+    display:flex; align-items:stretch; border-bottom:1px solid var(--gray-100); cursor:pointer; transition:background 0.15s;
+    min-height:54px;
+  }
+  .schedule-day-row:hover { background:var(--primary-light); }
+  .schedule-day-row.today { background:#f0f7ff; }
+  .schedule-day-row.has-visit { background:#fafbff; }
+  .schedule-day-time {
+    width:72px; min-width:72px; padding:8px 10px; text-align:right; font-size:0.82rem; color:var(--gray-400);
+    border-right:1px solid var(--gray-200); display:flex; align-items:flex-start; justify-content:flex-end;
+  }
+  .schedule-day-content { flex:1; padding:6px 12px; display:flex; flex-direction:column; gap:4px; }
+  .schedule-day-empty { font-size:0.78rem; color:var(--gray-300); padding:4px 0; }
+  .visit-card-day {
+    padding:8px 12px; border-radius:8px; cursor:pointer; position:relative;
+    border-left:4px solid transparent; transition:transform 0.1s, box-shadow 0.1s;
+  }
+  .visit-card-day:hover { transform:translateY(-1px); box-shadow:0 2px 8px rgba(0,0,0,0.12); }
+  .visit-card-day .visit-day-main { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .visit-card-day .visit-name-lg { font-weight:700; font-size:1rem; }
+  .visit-card-day .visit-time-lg { font-size:0.85rem; color:rgba(0,0,0,0.5); }
+  .visit-card-day .visit-day-detail { display:flex; gap:14px; font-size:0.8rem; color:rgba(0,0,0,0.45); margin-top:3px; flex-wrap:wrap; }
+  .visit-card-day .visit-del {
+    position:absolute; top:8px; right:10px; font-size:0.8rem; cursor:pointer;
+    color:rgba(0,0,0,0.3); display:none;
+  }
+  .visit-card-day:hover .visit-del { display:block; }
+
+  /* ===== 月檢視 ===== */
+  .schedule-month-grid {
+    display:grid; grid-template-columns:repeat(7,1fr);
+    border:1px solid var(--gray-200); border-radius:10px; overflow:hidden;
+    background:#fff; box-shadow:var(--shadow);
+  }
+  .schedule-month-header {
+    background:linear-gradient(135deg, var(--gray-50), var(--gray-100));
+    padding:8px 4px; text-align:center; font-weight:600; font-size:0.82rem;
+    border-bottom:2px solid var(--gray-200); color:var(--gray-500);
+  }
+  .schedule-month-cell {
+    min-height:100px; border-right:1px solid var(--gray-100); border-bottom:1px solid var(--gray-100);
+    padding:4px 6px; cursor:pointer; transition:background 0.15s; position:relative;
+  }
+  .schedule-month-cell:nth-child(7n) { border-right:none; }
+  .schedule-month-cell:hover { background:var(--primary-light); }
+  .schedule-month-cell.other-month { background:var(--gray-50); }
+  .schedule-month-cell.other-month .month-day-num { color:var(--gray-300); }
+  .schedule-month-cell.today { background:#f0f7ff; }
+  .month-day-num { font-size:0.85rem; font-weight:600; color:var(--gray-600); margin-bottom:3px; }
+  .month-day-num.today-num {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:26px; height:26px; border-radius:50%; background:var(--primary); color:#fff;
+  }
+  .month-day-visits { display:flex; flex-direction:column; gap:2px; }
+  .month-visit-item {
+    font-size:0.72rem; padding:2px 5px; border-radius:4px; cursor:pointer;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-left:3px solid transparent;
+  }
+  .month-visit-item:hover { filter:brightness(0.95); }
+  .month-visit-time { font-weight:600; }
+  .month-visit-more { font-size:0.7rem; color:var(--gray-400); padding:1px 5px; cursor:pointer; }
+  .month-visit-more:hover { color:var(--primary); }
 </style>
 </head>
 <body>
@@ -485,18 +554,24 @@
   <section id="page-schedule" class="page">
     <div class="page-toolbar" style="flex-wrap:wrap;gap:8px;">
       <div class="toolbar-left" style="gap:8px;flex-wrap:wrap;align-items:center;">
-        <button class="btn btn-xs btn-outline" onclick="scheduleNav(-1)" title="上一週">◀</button>
-        <button class="btn btn-xs btn-outline" onclick="scheduleNavToday()" title="本週">今天</button>
-        <button class="btn btn-xs btn-outline" onclick="scheduleNav(1)" title="下一週">▶</button>
+        <button class="btn btn-xs btn-outline" onclick="scheduleNav(-1)">◀</button>
+        <button class="btn btn-xs btn-outline" onclick="scheduleNavToday()">今天</button>
+        <button class="btn btn-xs btn-outline" onclick="scheduleNav(1)">▶</button>
         <span id="schedule-week-label" style="font-weight:700;font-size:1.05rem;margin:0 4px;"></span>
+        <!-- 檢視模式切換 -->
+        <div class="casemap-mode-btns" id="schedule-view-btns">
+          <button onclick="switchScheduleView('day')" id="sv-btn-day">日</button>
+          <button onclick="switchScheduleView('week')" id="sv-btn-week" class="active">週</button>
+          <button onclick="switchScheduleView('month')" id="sv-btn-month">月</button>
+        </div>
       </div>
       <div class="toolbar-right" style="gap:8px;flex-wrap:wrap;align-items:center;">
         <select class="form-select" id="schedule-doctor" onchange="renderSchedule()" style="width:auto">
           <option value="">全部醫師</option>
         </select>
-        <button class="btn btn-xs btn-primary" onclick="openScheduleAdd()" title="新增訪視">＋ 新增訪視</button>
-        <button class="btn btn-xs btn-outline" onclick="scheduleAutoArrange()" title="自動排程">🤖 自動排程</button>
-        <button class="btn btn-xs btn-outline" onclick="scheduleExport()" title="匯出行程">📤 匯出</button>
+        <button class="btn btn-xs btn-primary" onclick="openScheduleAdd()">＋ 新增訪視</button>
+        <button class="btn btn-xs btn-outline" onclick="scheduleAutoArrange()">🤖 自動排程</button>
+        <button class="btn btn-xs btn-outline" onclick="scheduleExport()">📤 匯出</button>
       </div>
     </div>
     <div id="schedule-container" style="overflow-x:auto;"></div>
@@ -620,6 +695,6 @@
 <script src="firebase-config.js?v=20260412b"></script>
 <script src="cases-data.js"></script>
 <script src="data.js?v=20260412"></script>
-<script src="app.js?v=20260412sched2"></script>
+<script src="app.js?v=20260412sched3"></script>
 </body>
 </html>
