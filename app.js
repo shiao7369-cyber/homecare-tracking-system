@@ -52,7 +52,8 @@ function initNav() {
 const pageTitles = {
   dashboard: '主控儀表板', cases: '個案管理', members: '成員管理',
   services: '服務紀錄', opinion: '醫師意見書', billing: '費用申報',
-  casemap: '個案地圖', alerts: '警示與待辦', reports: '報表匯出', users: '使用者管理'
+  schedule: '訪視行程', casemap: '個案地圖', alerts: '警示與待辦',
+  reports: '報表匯出', users: '使用者管理'
 };
 
 function switchPage(page) {
@@ -67,7 +68,7 @@ function switchPage(page) {
   const renderers = {
     dashboard: renderDashboard, cases: renderCases, members: renderMembers,
     services: renderServices, opinion: renderOpinions, billing: renderBilling,
-    casemap: renderCaseMap, alerts: renderAlerts, users: renderUserManagement
+    schedule: renderSchedule, casemap: renderCaseMap, alerts: renderAlerts, users: renderUserManagement
   };
   if (renderers[page]) renderers[page]();
 }
@@ -2406,6 +2407,440 @@ async function geocodeAllCases() {
   statusEl.innerHTML = `<span style="color:#4CAF50">✓ 定位完成：成功 ${success}，失敗 ${fail}</span>`;
   if (btn) { btn.disabled = false; btn.textContent = '📍 地址定位'; }
   renderCaseMap();
+}
+
+// ==========================================
+//  訪視行程表（Google Calendar 風格）
+// ==========================================
+const SCHEDULE_KEY = 'homecare_schedule';
+let _scheduleWeekStart = null; // 當週起始日（週一）
+
+function getScheduleData() {
+  try { return JSON.parse(localStorage.getItem(SCHEDULE_KEY) || '[]'); } catch { return []; }
+}
+function saveScheduleData(data) {
+  localStorage.setItem(SCHEDULE_KEY, JSON.stringify(data));
+  // 同步到 db 供後端儲存
+  db.schedules = data;
+  saveDB(db);
+}
+
+function getWeekStart(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // 週一
+  d.setDate(diff);
+  d.setHours(0,0,0,0);
+  return d;
+}
+
+function scheduleNavToday() {
+  _scheduleWeekStart = getWeekStart(new Date());
+  renderSchedule();
+}
+function scheduleNav(dir) {
+  if (!_scheduleWeekStart) _scheduleWeekStart = getWeekStart(new Date());
+  _scheduleWeekStart.setDate(_scheduleWeekStart.getDate() + dir * 7);
+  renderSchedule();
+}
+
+const SCHEDULE_SLOTS = [
+  { label: '☀️ 上午', period: 'am', times: ['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30'] },
+  { label: '🌤️ 下午', period: 'pm', times: ['13:00','13:30','14:00','14:30','15:00','15:30','16:00','16:30'] },
+  { label: '🌙 晚間', period: 'eve', times: ['17:00','17:30','18:00','18:30'] }
+];
+const WEEKDAY_NAMES = ['一','二','三','四','五','六','日'];
+
+function renderSchedule() {
+  if (!_scheduleWeekStart) _scheduleWeekStart = getWeekStart(new Date());
+  const container = document.getElementById('schedule-container');
+  if (!container) return;
+
+  // 填充醫師選擇器
+  const docSel = document.getElementById('schedule-doctor');
+  if (docSel && docSel.options.length <= 1) {
+    getDoctors(db).filter(d => d.status === 'active').forEach(d => {
+      docSel.add(new Option(d.name, d.id));
+    });
+  }
+  const filterDoc = docSel?.value || '';
+
+  const schedules = getScheduleData();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const weekDates = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(_scheduleWeekStart);
+    d.setDate(d.getDate() + i);
+    weekDates.push(d);
+  }
+
+  // 週標題
+  const ws = _scheduleWeekStart;
+  const we = new Date(ws); we.setDate(we.getDate() + 6);
+  document.getElementById('schedule-week-label').textContent =
+    `${ws.getFullYear()}/${ws.getMonth()+1}/${ws.getDate()} — ${we.getMonth()+1}/${we.getDate()}`;
+
+  // 統計
+  const weekVisits = schedules.filter(s => {
+    const sd = new Date(s.date);
+    return sd >= ws && sd <= we && (!filterDoc || s.doctorId === filterDoc);
+  });
+  const doctors = getDoctors(db).filter(d => d.status === 'active');
+  const docColorMap = {};
+  doctors.forEach((d, i) => { docColorMap[d.id] = i % 8; });
+
+  let html = '<div class="schedule-stats">';
+  html += `<span class="stat-item"><strong>本週訪視：${weekVisits.length} 筆</strong></span>`;
+  // 各醫師統計
+  doctors.forEach((d, i) => {
+    const cnt = weekVisits.filter(v => v.doctorId === d.id).length;
+    if (cnt > 0 || !filterDoc) {
+      html += `<span class="stat-item"><span class="stat-dot visit-doctor-${i % 8}" style="background:${['#2563eb','#16a34a','#d97706','#db2777','#4f46e5','#0891b2','#7c3aed','#dc2626'][i%8]}"></span>${esc(d.name)} ${cnt}</span>`;
+    }
+  });
+  html += '</div>';
+
+  // 表格
+  html += '<div class="schedule-grid">';
+  // 表頭
+  html += '<div class="schedule-header" style="border-bottom:2px solid var(--gray-200)"></div>';
+  weekDates.forEach(d => {
+    const isToday = d.getTime() === today.getTime();
+    const dayStr = `${d.getMonth()+1}/${d.getDate()}`;
+    html += `<div class="schedule-header${isToday ? ' today' : ''}">
+      <div>週${WEEKDAY_NAMES[d.getDay() === 0 ? 6 : d.getDay()-1]}</div>
+      <div class="day-num">${d.getDate()}</div>
+      <div style="font-size:0.7rem;color:var(--gray-400)">${d.getMonth()+1}月</div>
+    </div>`;
+  });
+
+  // 時段
+  SCHEDULE_SLOTS.forEach(slot => {
+    html += `<div class="schedule-period-label">${slot.label}</div>`;
+    slot.times.forEach(time => {
+      html += `<div class="schedule-time-label">${time}</div>`;
+      weekDates.forEach(d => {
+        const dateStr = fmt(d);
+        const isToday = d.getTime() === today.getTime();
+        const cellVisits = schedules.filter(s =>
+          s.date === dateStr && s.time === time && (!filterDoc || s.doctorId === filterDoc)
+        );
+        html += `<div class="schedule-cell${isToday ? ' today' : ''}" onclick="openScheduleAdd('${dateStr}','${time}')" data-date="${dateStr}" data-time="${time}">`;
+        cellVisits.forEach(v => {
+          const c = findCase(db, v.caseId);
+          const cName = c ? c.name : v.caseName || '?';
+          const cAddr = c ? (c.address || c.district || '') : '';
+          const docIdx = docColorMap[v.doctorId] ?? 0;
+          const doc = findMember(db, v.doctorId);
+          const endTime = addMinutes(time, v.duration || 30);
+          html += `<div class="visit-card visit-doctor-${docIdx}" onclick="event.stopPropagation();openVisitDetail('${v.id}')" title="${esc(cName)} ${time}-${endTime}">
+            <div class="visit-name">${esc(cName)}</div>
+            <div class="visit-time">${time}-${endTime} ${doc ? esc(doc.name) : ''}</div>
+            ${cAddr ? `<div class="visit-addr">📍 ${esc(cAddr.substring(0,15))}</div>` : ''}
+            <span class="visit-del" onclick="event.stopPropagation();deleteVisit('${v.id}')" title="刪除">✕</span>
+          </div>`;
+        });
+        html += '</div>';
+      });
+    });
+  });
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function addMinutes(timeStr, mins) {
+  const [h, m] = timeStr.split(':').map(Number);
+  const total = h * 60 + m + mins;
+  return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`;
+}
+
+// 新增訪視 Modal
+function openScheduleAdd(date, time) {
+  const doctors = getDoctors(db).filter(d => d.status === 'active');
+  const defaultDate = date || fmt(new Date());
+  const defaultTime = time || '09:00';
+
+  const body = `
+    <div class="schedule-add-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">訪視日期 *</label>
+          <input type="date" class="form-input" id="sv-date" value="${defaultDate}" style="width:100%">
+        </div>
+        <div class="form-group">
+          <label class="form-label">開始時間 *</label>
+          <select class="form-select" id="sv-time" style="width:100%">
+            ${SCHEDULE_SLOTS.flatMap(s => s.times).map(t => `<option value="${t}" ${t===defaultTime?'selected':''}>${t}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">時長 (分鐘)</label>
+          <select class="form-select" id="sv-duration" style="width:100%">
+            <option value="30" selected>30 分鐘</option>
+            <option value="45">45 分鐘</option>
+            <option value="60">60 分鐘</option>
+            <option value="90">90 分鐘</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">負責醫師 *</label>
+          <select class="form-select" id="sv-doctor" style="width:100%">
+            ${doctors.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">訪視類型</label>
+          <select class="form-select" id="sv-type" style="width:100%">
+            <option value="home">🏠 到宅訪視</option>
+            <option value="phone">📞 電話訪視</option>
+            <option value="video">📹 視訊訪視</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group schedule-case-search">
+        <label class="form-label">選擇個案 *</label>
+        <input class="form-input" id="sv-case-search" placeholder="輸入姓名或案號搜尋..." style="width:100%" oninput="searchScheduleCase(this.value)" autocomplete="off">
+        <input type="hidden" id="sv-case-id">
+        <div class="schedule-case-dropdown" id="sv-case-dropdown"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">備註</label>
+        <input class="form-input" id="sv-note" placeholder="訪視備註（選填）" style="width:100%">
+      </div>
+    </div>`;
+  const footer = `
+    <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    <button class="btn btn-primary" onclick="saveVisit()">確認排程</button>`;
+  openModal('新增訪視排程', body, footer);
+}
+
+function searchScheduleCase(q) {
+  const dd = document.getElementById('sv-case-dropdown');
+  if (!q || q.length < 1) { dd.style.display = 'none'; return; }
+  const ql = q.toLowerCase();
+  const doctorId = document.getElementById('sv-doctor').value;
+  const matches = getActiveCases(db).filter(c =>
+    (c.doctorId === doctorId || !doctorId) &&
+    ((c.name && c.name.toLowerCase().includes(ql)) ||
+     (c.caseNo && c.caseNo.toLowerCase().includes(ql)) ||
+     (c.id && c.id.toLowerCase().includes(ql)))
+  ).slice(0, 8);
+
+  if (matches.length === 0) { dd.innerHTML = '<div style="padding:8px 12px;color:var(--gray-400)">無符合個案</div>'; dd.style.display = 'block'; return; }
+  dd.innerHTML = matches.map(c => {
+    const cms = getCmsLabel(c.cmsLevel);
+    return `<div class="case-option" onclick="selectScheduleCase('${c.id}','${esc(c.name)}')">
+      <span><strong>${esc(c.name)}</strong> <span style="color:var(--gray-400)">${esc(c.caseNo || c.id)}</span></span>
+      <span style="font-size:0.75rem;color:var(--gray-400)">${cms} ${c.district || ''}</span>
+    </div>`;
+  }).join('');
+  dd.style.display = 'block';
+}
+
+function selectScheduleCase(id, name) {
+  document.getElementById('sv-case-id').value = id;
+  document.getElementById('sv-case-search').value = name;
+  document.getElementById('sv-case-dropdown').style.display = 'none';
+}
+
+function saveVisit(editId) {
+  const date = document.getElementById('sv-date').value;
+  const time = document.getElementById('sv-time').value;
+  const duration = parseInt(document.getElementById('sv-duration').value);
+  const doctorId = document.getElementById('sv-doctor').value;
+  const type = document.getElementById('sv-type').value;
+  const caseId = document.getElementById('sv-case-id').value;
+  const note = document.getElementById('sv-note').value;
+
+  if (!date || !time || !caseId) { showToast('請填寫日期、時間並選擇個案', 'warning'); return; }
+
+  const c = findCase(db, caseId);
+  const schedules = getScheduleData();
+
+  const visit = {
+    id: editId || ('V' + Date.now()),
+    date, time, duration,
+    doctorId,
+    type,
+    caseId,
+    caseName: c ? c.name : '',
+    caseNo: c ? (c.caseNo || c.id) : '',
+    note,
+    status: 'scheduled', // scheduled | completed | cancelled
+    createdAt: new Date().toISOString()
+  };
+
+  if (editId) {
+    const idx = schedules.findIndex(s => s.id === editId);
+    if (idx >= 0) schedules[idx] = visit;
+  } else {
+    schedules.push(visit);
+  }
+
+  saveScheduleData(schedules);
+  closeModal();
+  renderSchedule();
+  showToast(`已排定 ${c ? c.name : ''} 的訪視 (${date} ${time})`);
+}
+
+function deleteVisit(id) {
+  if (!confirm('確定刪除此訪視排程？')) return;
+  const schedules = getScheduleData().filter(s => s.id !== id);
+  saveScheduleData(schedules);
+  renderSchedule();
+  showToast('已刪除訪視排程');
+}
+
+function openVisitDetail(id) {
+  const visit = getScheduleData().find(s => s.id === id);
+  if (!visit) return;
+  const c = findCase(db, visit.caseId);
+  const doc = findMember(db, visit.doctorId);
+  const endTime = addMinutes(visit.time, visit.duration || 30);
+  const typeLabel = { home:'🏠 到宅訪視', phone:'📞 電話訪視', video:'📹 視訊訪視' }[visit.type] || visit.type;
+  const statusLabel = { scheduled:'📋 已排定', completed:'✅ 已完成', cancelled:'❌ 已取消' }[visit.status] || visit.status;
+
+  const body = `
+    <div style="line-height:2;font-size:0.95rem">
+      <div style="font-size:1.2rem;font-weight:700;margin-bottom:8px">${c ? esc(c.name) : esc(visit.caseName)}</div>
+      <div>📅 <strong>${visit.date}</strong> &nbsp; ⏰ ${visit.time} — ${endTime} (${visit.duration}分鐘)</div>
+      <div>👨‍⚕️ ${doc ? esc(doc.name) : '-'}</div>
+      <div>${typeLabel}</div>
+      <div>${statusLabel}</div>
+      ${c ? `<div>🏠 ${esc(c.address || c.district || '-')}</div>` : ''}
+      ${c ? `<div>📋 ${esc(c.caseNo || c.id)} | ${getCmsLabel(c.cmsLevel)}</div>` : ''}
+      ${visit.note ? `<div>📝 ${esc(visit.note)}</div>` : ''}
+    </div>`;
+  const footer = `
+    <button class="btn btn-outline" onclick="closeModal()">關閉</button>
+    ${visit.status === 'scheduled' ? `
+      <button class="btn btn-success" onclick="updateVisitStatus('${id}','completed')">✅ 標記完成</button>
+      <button class="btn btn-danger" onclick="updateVisitStatus('${id}','cancelled')">❌ 取消</button>
+    ` : ''}
+    <button class="btn btn-outline" onclick="deleteVisit('${id}');closeModal()">🗑️ 刪除</button>`;
+  openModal('訪視詳情', body, footer);
+}
+
+function updateVisitStatus(id, status) {
+  const schedules = getScheduleData();
+  const v = schedules.find(s => s.id === id);
+  if (v) {
+    v.status = status;
+    saveScheduleData(schedules);
+    closeModal();
+    renderSchedule();
+    showToast(status === 'completed' ? '已標記為完成' : '已取消此訪視');
+  }
+}
+
+// 自動排程：將需要訪視的個案自動分配到本週空閒時段
+function scheduleAutoArrange() {
+  const doctorId = document.getElementById('schedule-doctor')?.value;
+  if (!doctorId) { showToast('請先選擇醫師', 'warning'); return; }
+
+  const doc = findMember(db, doctorId);
+  const cases = getActiveCases(db).filter(c => c.doctorId === doctorId);
+  const schedules = getScheduleData();
+
+  // 找出本週還沒排的個案（近6個月沒訪視的優先）
+  const now = new Date();
+  const sixMonthsAgo = new Date(now); sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  const needVisit = cases.filter(c => {
+    const lastVisit = c.doctorVisitDate ? new Date(c.doctorVisitDate) : null;
+    // 本週已排的不重複
+    const weekStart = _scheduleWeekStart || getWeekStart(now);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
+    const alreadyScheduled = schedules.some(s =>
+      s.caseId === c.id && new Date(s.date) >= weekStart && new Date(s.date) <= weekEnd
+    );
+    return !alreadyScheduled;
+  }).sort((a, b) => {
+    // 沒訪視過的排前面，訪視日期越舊越優先
+    const da = a.doctorVisitDate ? new Date(a.doctorVisitDate) : new Date('2000-01-01');
+    const db2 = b.doctorVisitDate ? new Date(b.doctorVisitDate) : new Date('2000-01-01');
+    return da - db2;
+  });
+
+  if (needVisit.length === 0) { showToast('本週已無需排程的個案', 'success'); return; }
+
+  // 可用時段（週一到週五上午下午）
+  const weekStart = _scheduleWeekStart || getWeekStart(now);
+  const availableSlots = [];
+  for (let day = 0; day < 5; day++) {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + day);
+    const dateStr = fmt(d);
+    // 如果日期已過就跳過
+    if (d < new Date(now.getFullYear(), now.getMonth(), now.getDate())) continue;
+    SCHEDULE_SLOTS.slice(0, 2).forEach(slot => { // 只排上午和下午
+      slot.times.forEach(time => {
+        const occupied = schedules.some(s => s.date === dateStr && s.time === time && s.doctorId === doctorId);
+        if (!occupied) availableSlots.push({ date: dateStr, time });
+      });
+    });
+  }
+
+  if (availableSlots.length === 0) { showToast('本週已無可用時段', 'warning'); return; }
+
+  // 排程
+  const toSchedule = needVisit.slice(0, availableSlots.length);
+  let count = 0;
+  toSchedule.forEach((c, i) => {
+    if (i >= availableSlots.length) return;
+    const slot = availableSlots[i];
+    schedules.push({
+      id: 'V' + Date.now() + '_' + i,
+      date: slot.date, time: slot.time, duration: 30,
+      doctorId, type: 'home',
+      caseId: c.id, caseName: c.name, caseNo: c.caseNo || c.id,
+      note: '自動排程', status: 'scheduled',
+      createdAt: new Date().toISOString()
+    });
+    count++;
+  });
+
+  saveScheduleData(schedules);
+  renderSchedule();
+  showToast(`已自動排入 ${count} 筆訪視 (${doc ? doc.name : ''})`, 'success');
+}
+
+// 匯出行程表
+function scheduleExport() {
+  const schedules = getScheduleData();
+  const weekStart = _scheduleWeekStart || getWeekStart(new Date());
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
+  const weekVisits = schedules.filter(s => {
+    const sd = new Date(s.date);
+    return sd >= weekStart && sd <= weekEnd;
+  }).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+
+  if (weekVisits.length === 0) { showToast('本週無訪視排程', 'warning'); return; }
+
+  const data = [['訪視行程表', `${fmt(weekStart)} ~ ${fmt(weekEnd)}`]];
+  data.push([]);
+  data.push(['日期', '時間', '時長(分)', '個案姓名', '案號', '醫師', '類型', '地址', '狀態', '備註']);
+  weekVisits.forEach(v => {
+    const c = findCase(db, v.caseId);
+    const doc = findMember(db, v.doctorId);
+    const typeLabel = { home:'到宅', phone:'電話', video:'視訊' }[v.type] || v.type;
+    const statusLabel = { scheduled:'已排定', completed:'已完成', cancelled:'已取消' }[v.status] || v.status;
+    data.push([
+      v.date, `${v.time}-${addMinutes(v.time, v.duration || 30)}`, v.duration || 30,
+      c ? c.name : v.caseName, c ? (c.caseNo || c.id) : v.caseNo,
+      doc ? doc.name : '', typeLabel,
+      c ? (c.address || '') : '', statusLabel, v.note || ''
+    ]);
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws['!cols'] = [{wch:12},{wch:14},{wch:8},{wch:10},{wch:14},{wch:8},{wch:6},{wch:30},{wch:8},{wch:15}];
+  XLSX.utils.book_append_sheet(wb, ws, '訪視行程');
+  XLSX.writeFile(wb, `訪視行程_${fmt(weekStart)}.xlsx`);
+  showToast('已匯出行程表');
 }
 
 function computeKPI(doctorFilter) {
