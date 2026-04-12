@@ -3071,6 +3071,14 @@ function scheduleRouteplan() {
 }
 
 function _launchVisitRoute(dateStr, filterDoc) {
+  // 暫存參數，先跳轉地圖頁讓 renderCaseMap 把座標都填好
+  _visitRouteData = { dateStr, filterDoc, pending: true };
+  switchPage('casemap');
+  // 等 renderCaseMap 完成（會從 geocache 填座標），再收集訪視資料
+  setTimeout(() => _buildAndDrawRoute(dateStr, filterDoc), 800);
+}
+
+function _buildAndDrawRoute(dateStr, filterDoc) {
   const schedules = getScheduleData();
   let dayVisits = schedules.filter(s =>
     s.date === dateStr && s.status !== 'cancelled' && (!filterDoc || s.doctorId === filterDoc)
@@ -3078,35 +3086,49 @@ function _launchVisitRoute(dateStr, filterDoc) {
 
   if (dayVisits.length === 0) { showToast('該日無訪視排程', 'warning'); return; }
 
-  // 取得個案座標（優先用 case.lat/lng，其次查 geoCache）
+  // 此時 renderCaseMap 已經從 geocache 補好了座標
+  // 再額外嘗試用多種方式查找座標
   const geoCache = getGeoCache();
   const visitCases = dayVisits.map(v => {
     const c = findCase(db, v.caseId);
     let lat = c?.lat, lng = c?.lng;
-    // 如果 case 沒有座標，從 geocache 補
+
     if ((!lat || !lng) && c) {
+      // 方法1：用 getCaseGeoAddress 查 geocache
       const cacheKey = getCaseGeoAddress(c);
       if (cacheKey && geoCache[cacheKey]) {
-        lat = geoCache[cacheKey][0];
-        lng = geoCache[cacheKey][1];
-        c.lat = lat; c.lng = lng; // 回寫到 case
+        lat = geoCache[cacheKey][0]; lng = geoCache[cacheKey][1];
       }
+      // 方法2：用原始地址查 geocache
+      if ((!lat || !lng) && c.address && geoCache[c.address]) {
+        lat = geoCache[c.address][0]; lng = geoCache[c.address][1];
+      }
+      // 方法3：遍歷 geocache 找包含該地址的 key
+      if ((!lat || !lng) && c.address) {
+        const addrPart = c.address.replace(/桃園市/, '').replace(/\d+[樓Ff].*$/, '').trim();
+        for (const [key, val] of Object.entries(geoCache)) {
+          if (key.includes(addrPart) || addrPart.includes(key)) {
+            lat = val[0]; lng = val[1]; break;
+          }
+        }
+      }
+      if (lat && lng) { c.lat = lat; c.lng = lng; }
     }
+
     return { visit: v, case: c, lat, lng, name: c?.name || v.caseName, address: c?.address || c?.district || '' };
   });
 
   const withCoords = visitCases.filter(vc => vc.lat && vc.lng);
+  const noCoords = visitCases.filter(vc => !vc.lat || !vc.lng);
+
   if (withCoords.length < 1) {
-    showToast('所有個案都尚未定位，請先進行地址定位', 'warning'); return;
+    showToast('所有個案都尚未定位，請先按「📍 地址定位」', 'warning');
+    _visitRouteData = null;
+    return;
   }
 
-  // 暫存路線資料
   _visitRouteData = { dateStr, filterDoc, visitCases: withCoords, allVisits: visitCases };
-
-  // 跳轉到個案地圖頁
-  switchPage('casemap');
-  // 等地圖初始化後繪製路線
-  setTimeout(() => _drawVisitRouteOnMap(), 500);
+  _drawVisitRouteOnMap();
 }
 
 async function _drawVisitRouteOnMap() {
