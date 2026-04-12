@@ -188,6 +188,11 @@ async function handleSSO() {
   const cleanUrl = window.location.pathname;
   window.history.replaceState({}, '', cleanUrl);
 
+  // 清除舊 session，確保用 SSO 使用者登入
+  sessionStorage.removeItem('auth_token');
+  sessionStorage.removeItem('auth_token_time');
+  authToken = null;
+
   try {
     const data = await apiCall('POST', '/api/sso', { token: ssoToken });
     authToken = data.token;
@@ -198,6 +203,7 @@ async function handleSSO() {
     return true;
   } catch (e) {
     console.error('SSO 登入失敗:', e.message);
+    alert('SSO 登入失敗: ' + e.message);
     return false;
   }
 }
