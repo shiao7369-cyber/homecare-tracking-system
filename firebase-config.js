@@ -202,7 +202,7 @@ async function handleSSO() {
   }
 }
 
-// ===== 頁面載入時嘗試自動登入 =====
+// ===== 頁面載入時直接進入（跳過登入） =====
 document.addEventListener('DOMContentLoaded', async () => {
   // 先嘗試 SSO
   if (await handleSSO()) return;
@@ -212,10 +212,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       currentUser = await apiCall('GET', '/api/me');
       onLoginSuccess();
+      return;
     } catch (e) {
       sessionStorage.removeItem('auth_token'); sessionStorage.removeItem('auth_token_time');
       authToken = null;
     }
+  }
+
+  // 無 token 時自動登入（跳過登入畫面）
+  try {
+    const data = await apiCall('POST', '/api/auto-login');
+    authToken = data.token;
+    currentUser = data.user;
+    sessionStorage.setItem('auth_token', authToken);
+    sessionStorage.setItem('auth_token_time', String(Date.now()));
+    onLoginSuccess(data);
+  } catch (err) {
+    console.error('自動登入失敗', err);
   }
 });
 

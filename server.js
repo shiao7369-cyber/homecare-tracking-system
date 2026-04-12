@@ -359,6 +359,21 @@ app.post('/api/sso', async (req, res) => {
   }
 });
 
+// 免登入自動取得 token（開發/內部用途）
+app.post('/api/auto-login', async (req, res) => {
+  const users = await loadUsers();
+  const admin = users.find(u => u.role === 'admin' && u.status === 'active') || users.find(u => u.status === 'active');
+  if (!admin) return res.status(500).json({ error: '無可用帳號' });
+  const token = createSession(admin);
+  auditLog('AUTO_LOGIN', admin.id, { ip: req.ip, msg: '免登入自動登入' });
+  res.json({
+    token,
+    user: { id: admin.id, username: admin.username, displayName: admin.displayName, role: admin.role },
+    sessionMaxAge: SESSION_MAX_AGE,
+    sessionIdleTimeout: SESSION_IDLE_TIMEOUT
+  });
+});
+
 // 登出
 app.post('/api/logout', (req, res) => {
   const token = req.headers['authorization']?.replace('Bearer ', '');
