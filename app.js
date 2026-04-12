@@ -1685,12 +1685,24 @@ function renderCaseMap() {
       popupAnchor: [0, -36]
     });
 
-    const marker = L.marker([lat, lng], { icon: pinIcon }).addTo(caseMapInstance);
+    const marker = L.marker([lat, lng], { icon: pinIcon, draggable: true }).addTo(caseMapInstance);
 
     // 永久顯示姓名標籤
     marker.bindTooltip(label, {
       permanent: true, direction: 'right', offset: [12, -20],
       className: 'casemap-label'
+    });
+
+    // 拖拉結束 → 儲存新座標
+    marker.on('dragend', function() {
+      const pos = marker.getLatLng();
+      c.lat = pos.lat; c.lng = pos.lng;
+      const gc = getGeoCache();
+      const ck = getCaseGeoAddress(c);
+      if (ck) gc[ck] = [pos.lat, pos.lng];
+      setGeoCache(gc);
+      saveDB(db);
+      showToast(`${c.name} 位置已更新`);
     });
 
     marker.bindPopup(`
@@ -1704,6 +1716,7 @@ function renderCaseMap() {
         <div>📅 收案 ${c.enrollDate || '-'}</div>
         ${c.phone ? `<div>📞 ${esc(c.phone)}</div>` : ''}
         ${c.contactPerson ? `<div>👤 ${esc(c.contactPerson)}</div>` : ''}
+        <div style="margin-top:6px;color:#999;font-size:0.75rem">💡 可拖拉圖釘修正位置</div>
       </div>
     `);
     caseMapMarkers.push(marker);
@@ -1740,9 +1753,19 @@ function addCasePin(c) {
     html: pinSvg, className: 'casemap-pin',
     iconSize: [28, 40], iconAnchor: [14, 40], popupAnchor: [0, -36]
   });
-  const marker = L.marker([c.lat, c.lng], { icon: pinIcon }).addTo(caseMapInstance);
+  const marker = L.marker([c.lat, c.lng], { icon: pinIcon, draggable: true }).addTo(caseMapInstance);
   marker.bindTooltip(label, {
     permanent: true, direction: 'right', offset: [12, -20], className: 'casemap-label'
+  });
+  marker.on('dragend', function() {
+    const pos = marker.getLatLng();
+    c.lat = pos.lat; c.lng = pos.lng;
+    const gc = getGeoCache();
+    const ck = getCaseGeoAddress(c);
+    if (ck) gc[ck] = [pos.lat, pos.lng];
+    setGeoCache(gc);
+    saveDB(db);
+    showToast(`${c.name} 位置已更新`);
   });
   marker.bindPopup(`
     <div style="min-width:220px;line-height:1.7;font-size:0.9rem">
@@ -1754,6 +1777,7 @@ function addCasePin(c) {
       <div>👨‍⚕️ ${doctor ? esc(doctor.name) : (c.doctorName || '-')}</div>
       <div>📅 收案 ${c.enrollDate || '-'}</div>
       ${c.phone ? `<div>📞 ${esc(c.phone)}</div>` : ''}
+      <div style="margin-top:6px;color:#999;font-size:0.75rem">💡 可拖拉圖釘修正位置</div>
     </div>
   `);
   caseMapMarkers.push(marker);
