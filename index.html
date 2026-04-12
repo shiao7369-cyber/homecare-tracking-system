@@ -346,6 +346,9 @@
         </select>
       </div>
       <div class="toolbar-right">
+        <button class="btn btn-outline" onclick="document.getElementById('import-billing-file').click()">📥 匯入核銷清冊</button>
+        <input type="file" id="import-billing-file" accept=".xls,.xlsx" style="display:none" onchange="importBillingFile(this)">
+        <button class="btn btn-outline" onclick="exportBillingSummary()">📊 產生核銷總表</button>
         <button class="btn btn-outline" onclick="generateBilling()">產生申報清冊</button>
         <button class="btn btn-primary" onclick="submitBilling()">批次申報</button>
       </div>

@@ -1284,13 +1284,15 @@ function renderBilling() {
   document.getElementById('billing-tbody').innerHTML = filtered.slice(0, 100).map(b => {
     const c = findCase(db, b.caseId);
     const m = findMember(db, b.memberId);
+    const displayName = c ? esc(c.name) : (b.caseName ? esc(b.caseName) : esc(b.caseId));
+    const displayMember = m ? esc(m.name) : (b.doctorName ? esc(b.doctorName) : '-');
     return `<tr>
       <td><input type="checkbox" class="billing-cb" data-id="${b.id}" ${b.status==='pending'?'':'disabled'}></td>
       <td>${b.billingMonth}</td>
-      <td>${c ? esc(c.name) : esc(b.caseId)}</td>
+      <td>${displayName}</td>
       <td><span class="badge badge-info">${b.code}</span></td>
       <td>${b.serviceDate}</td>
-      <td>${m ? esc(m.name) : '-'}</td>
+      <td>${displayMember}</td>
       <td>$${b.amount.toLocaleString()}</td>
       <td>${billingStatusBadge(b.status)}</td>
       <td>${b.status === 'pending' ? `<button class="btn btn-xs btn-primary" onclick="submitSingleBilling('${b.id}')">申報</button>` : ''}</td>
@@ -1336,6 +1338,224 @@ function generateBilling() {
     csv += `${escCSV(b.billingMonth)},${escCSV(b.caseId)},${c?escCSV(c.name):''},${escCSV(b.code)},${escCSV(b.serviceDate)},${m?escCSV(m.name):''},${b.amount},${escCSV(b.status)}\n`;
   });
   downloadCSV(csv, `申報清冊_${month}.csv`);
+}
+
+// ==========================================
+//  匯入核銷清冊 / 產生核銷總表
+// ==========================================
+function importBillingFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    try {
+      const workbook = XLSX.read(ev.target.result, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      // 找到標題列
+      let headerIdx = -1;
+      for (let i = 0; i < Math.min(aoa.length, 5); i++) {
+        const row = aoa[i].map(h => String(h).replace(/[\r\n\s]/g, ''));
+        if (row.includes('服務代碼') && row.includes('身分證號')) { headerIdx = i; break; }
+      }
+      if (headerIdx < 0) { showToast('無法辨識核銷清冊格式，需包含「服務代碼」和「身分證號」欄位', 'danger'); return; }
+      const headers = aoa[headerIdx].map(h => String(h).replace(/[\r\n\s]/g, ''));
+      const col = (name) => headers.indexOf(name);
+
+      function rocToAD(rocStr) {
+        if (!rocStr) return '';
+        const s = String(rocStr).trim();
+        const m = s.match(/^(\d{2,3})\/(\d{1,2})\/(\d{1,2})/);
+        if (!m) return '';
+        return `${parseInt(m[1])+1911}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+      }
+      function extractDate(plan) {
+        const s = String(plan).trim();
+        const m = s.match(/^(\d{2,3})\/(\d{1,2})\/(\d{1,2})/);
+        if (m) return `${parseInt(m[1])+1911}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+        return '';
+      }
+
+      let imported = 0, skipped = 0, duplicated = 0;
+      const maxId = db.billings.reduce((mx, b) => {
+        const n = parseInt((b.id || '').replace('B', ''));
+        return n > mx ? n : mx;
+      }, 0);
+
+      for (let i = headerIdx + 1; i < aoa.length; i++) {
+        const row = aoa[i];
+        const code = String(row[col('服務代碼')] || '').trim();
+        if (!code || code === '總計') continue;
+        const idNumber = String(row[col('身分證號')] || '').trim().toUpperCase();
+        if (!idNumber) { skipped++; continue; }
+        const caseName = String(row[col('個案姓名')] || '').trim();
+        const doctorName = String(row[col('醫師/個管員')] || '').trim();
+        const plan = String(row[col('採用計畫')] || '');
+        const serviceDate = extractDate(plan);
+        const cmsLevel = String(row[col('CMS等級')] || '').trim();
+        const serviceType = String(row[col('服務項目類別')] || '').trim();
+        const amount = parseFloat(row[col('小計')]) || 0;
+        const qty = parseFloat(row[col('數量')]) || 1;
+        const unitPrice = parseFloat(row[col('給付價格')]) || 0;
+        const district = String(row[col('居住行政區')] || '').trim();
+        const city = String(row[col('居住縣市')] || '').trim();
+        const careManager = String(row[col('照管專員')] || '').trim();
+
+        // 找對應個案
+        const caseMatch = db.cases.find(c => c.idNumber && c.idNumber.toUpperCase() === idNumber);
+        const caseId = caseMatch ? caseMatch.id : '';
+        // 找醫師/個管
+        const memberMatch = db.members.find(m => m.name === doctorName);
+        const memberId = memberMatch ? memberMatch.id : '';
+
+        // 計算申報月份 (從計畫日期推算，或用服務日期)
+        const billingMonth = serviceDate ? serviceDate.substring(0, 7) : '';
+
+        // 重複檢查
+        const isDup = db.billings.some(b =>
+          b.code === code && b.serviceDate === serviceDate &&
+          ((caseId && b.caseId === caseId) || b.idNumber === idNumber)
+        );
+        if (isDup) { duplicated++; continue; }
+
+        imported++;
+        db.billings.push({
+          id: 'B' + String(maxId + imported).padStart(5, '0'),
+          caseId, code, serviceDate, billingMonth,
+          memberId, amount, status: 'pending',
+          // 核銷清冊額外欄位
+          idNumber, caseName, doctorName, cmsLevel, serviceType,
+          unitPrice, qty, district, city, careManager, plan,
+          source: 'lcms_billing'
+        });
+      }
+
+      saveDB(db);
+      renderBilling();
+      showToast(`核銷清冊匯入完成：新增 ${imported} 筆${duplicated ? `，重複跳過 ${duplicated} 筆` : ''}${skipped ? `，無效跳過 ${skipped} 筆` : ''}`);
+    } catch (err) {
+      console.error('核銷清冊匯入失敗:', err);
+      showToast('核銷清冊匯入失敗: ' + err.message, 'danger');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function exportBillingSummary() {
+  const month = document.getElementById('billing-month')?.value || '';
+  if (!month) { showToast('請先選擇申報月份', 'warning'); return; }
+  const items = db.billings.filter(b => b.billingMonth === month);
+  if (items.length === 0) { showToast('該月份無申報資料', 'warning'); return; }
+
+  // 依服務代碼分類統計
+  const codeMap = {};
+  items.forEach(b => {
+    if (!codeMap[b.code]) codeMap[b.code] = { count: 0, total: 0 };
+    codeMap[b.code].count += 1;
+    codeMap[b.code].total += b.amount;
+  });
+
+  // 總表欄位對照
+  const t06 = 0; // AA01~AA02 照顧組合
+  const t07 = (codeMap['AA03']?.total||0)+(codeMap['AA04']?.total||0)+(codeMap['AA05']?.total||0)
+             +(codeMap['AA06']?.total||0)+(codeMap['AA07']?.total||0)+(codeMap['AA08']?.total||0)
+             +(codeMap['AA09']?.total||0)+(codeMap['AA10']?.total||0)+(codeMap['AA11']?.total||0)
+             +(codeMap['AA12']?.total||0); // 政策鼓勵 (含AA12醫師意見書)
+  const t08 = 0; // BA 居家照顧
+  const t09 = 0; // BB 日間照顧
+  const t10 = 0; // BC 家庭托顧
+  const t11 = 0; // BD 社區式
+  const t12 = 0; // C 專業服務
+  const t13 = 0; // D 交通接送
+  const t14 = 0; // E 輔具
+  const t15 = 0; // F 無障礙
+  const t16 = 0; // G 喘息
+  const t17 = t06+t07+t08+t09+t10+t11+t12+t13+t14+t15+t16; // 申報費用(含部分負擔)
+  const t18 = 0; // 部分負擔
+  const t19 = t17 - t18; // 申請費用
+  const t20 = 0; // 膳費
+  const t21 = 0; // 縣市補助
+  const t22 = (codeMap['YA01']?.total||0)+(codeMap['YA02']?.total||0)
+             +(codeMap['YA03']?.total||0)+(codeMap['YA04']?.total||0); // 其他服務
+  const t23 = t20+t21+t22; // 非照顧組合小計
+  const t24 = t19+t23; // 總計
+
+  const [yyyy, mm] = month.split('-');
+  const rocYear = parseInt(yyyy) - 1911;
+  const monthStr = `${rocYear}年${mm}月`;
+
+  // 產生 Excel 格式核銷總表
+  const wb = XLSX.utils.book_new();
+  const data = [
+    ['特約長照服務提供者服務費用申報總表'],
+    [],
+    ['服務提供者', '敏盛綜合醫院', '', '費用年月', `${rocYear}年 ${mm}月`, '', '申報方式', '□書面 □網路 ■媒體'],
+    ['申報類別', '■送核 □補報', '', '發文日期', '', '', '收文日期', ''],
+    [],
+    ['服務項目類別', '', '申報費用(元)', '筆數', '備註'],
+    ['照顧組合', 'A碼 照顧管理', t06, '', 'AA01~AA02'],
+    ['', '政策鼓勵', t07, codeMap['AA12']?.count||0, 'AA03~AA12 (含醫師意見書)'],
+    ['', 'B碼 居家照顧服務', t08, '', 'BA01~BA22'],
+    ['', '日間照顧服務', t09, '', 'BB01~BB14'],
+    ['', '家庭托顧服務', t10, '', 'BC01~BC14'],
+    ['', '社區式照顧', t11, '', 'BD01~BD03'],
+    ['', 'C碼 專業服務', t12, '', ''],
+    ['', 'D碼 交通接送服務', t13, '', ''],
+    ['', 'E碼 輔具服務', t14, '', ''],
+    ['', 'F碼 居家無障礙', t15, '', ''],
+    ['', 'G碼 喘息服務', t16, '', ''],
+    ['申報費用(含部分負擔)', '', t17, '', 't06~t16加總'],
+    ['僅部分負擔費用', '', t18, '', ''],
+    ['申請(補助)費用 (t17-t18)', '', t19, '', ''],
+    [],
+    ['非照顧組合', '營養餐飲(膳費)', t20, '', ''],
+    ['', '縣市政府補助', t21, '', ''],
+    ['', '其他服務', t22, (codeMap['YA01']?.count||0)+(codeMap['YA02']?.count||0)+(codeMap['YA03']?.count||0)+(codeMap['YA04']?.count||0), 'YA01~YA04'],
+    ['非照顧組合小計', '', t23, '', 't20~t22加總'],
+    [],
+    ['總計(系統計算)', '', t24, items.length, 't19+t23'],
+    [],
+    ['本次申報起迄日期', `${rocYear}年${mm}月01日`, '~', `${rocYear}年${mm}月${new Date(parseInt(yyyy), parseInt(mm), 0).getDate()}日`],
+    [],
+    ['=== 各代碼明細 ==='],
+  ];
+
+  // 加入各代碼明細統計
+  Object.keys(codeMap).sort().forEach(code => {
+    const info = codeMap[code];
+    const label = billingCodeLabel(code);
+    data.push([code, label, info.total, info.count, `均價 $${Math.round(info.total/info.count)}`]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  // 設定欄寬
+  ws['!cols'] = [{wch:20},{wch:22},{wch:15},{wch:8},{wch:25}];
+  // 合併標題列
+  ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:4}}];
+  XLSX.utils.book_append_sheet(wb, ws, '核銷總表');
+
+  // 加入核銷清冊 sheet
+  const listData = [['服務代碼','醫師/個管員','採用計畫','CMS等級','服務項目類別','身分證號','個案姓名','給付價格','數量','小計','居住縣市','居住行政區','照管專員']];
+  items.forEach(b => {
+    const c = findCase(db, b.caseId);
+    listData.push([
+      b.code, b.doctorName || (db.members.find(m=>m.id===b.memberId)?.name||''),
+      b.plan || '', b.cmsLevel || (c?.cmsLevel||''),
+      b.serviceType || billingCodeLabel(b.code),
+      b.idNumber || (c?.idNumber||''), b.caseName || (c?.name||''),
+      b.unitPrice || b.amount, b.qty || 1, b.amount,
+      b.city || (c?.city||''), b.district || (c?.district||''),
+      b.careManager || (c?.careManager||'')
+    ]);
+  });
+  listData.push(['總計','','','','','','','','', items.reduce((s,b)=>s+b.amount,0),'','','']);
+  const ws2 = XLSX.utils.aoa_to_sheet(listData);
+  ws2['!cols'] = [{wch:10},{wch:10},{wch:30},{wch:8},{wch:25},{wch:14},{wch:10},{wch:10},{wch:6},{wch:10},{wch:8},{wch:8},{wch:8}];
+  XLSX.utils.book_append_sheet(wb, ws2, '核銷清冊');
+
+  XLSX.writeFile(wb, `核銷總表_${month}.xlsx`);
+  showToast(`已產生 ${monthStr} 核銷總表 (含清冊)，共 ${items.length} 筆，總金額 $${t24.toLocaleString()}`);
 }
 
 // ==========================================
