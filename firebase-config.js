@@ -339,6 +339,13 @@ async function loadCloudData() {
 }
 
 async function syncDataToBackend(data) {
+  // 確保 schedules 從 localStorage 合併到 data
+  if (!data.schedules || data.schedules.length === 0) {
+    try {
+      const localSchedules = JSON.parse(localStorage.getItem('homecare_schedule') || '[]');
+      if (localSchedules.length > 0) data.schedules = localSchedules;
+    } catch(e) {}
+  }
   const payload = { dataVersion: DB_VERSION };
   COLLECTIONS.forEach(col => { if (data[col]) payload[col] = data[col]; });
   await apiCall('POST', '/api/data/sync', payload);
@@ -348,23 +355,40 @@ function saveDB_local(data) {
   localStorage.setItem(DB_KEY, JSON.stringify(data));
   localStorage.setItem(DB_VERSION_KEY, DB_VERSION);
   if (data.members) saveMembers(data.members);
+  // 同步 schedules 到獨立的 localStorage key
+  if (data.schedules && data.schedules.length > 0) {
+    localStorage.setItem('homecare_schedule', JSON.stringify(data.schedules));
+  }
 }
 
 // saveDB - via backend API
 let _saveDebounceTimer = null;
 function saveDB(data) {
+  // 確保 schedules 從 localStorage 合併到 data
+  if (!data.schedules || data.schedules.length === 0) {
+    try {
+      const ls = JSON.parse(localStorage.getItem('homecare_schedule') || '[]');
+      if (ls.length > 0) data.schedules = ls;
+    } catch(e) {}
+  }
   localStorage.setItem(DB_KEY, JSON.stringify(data));
   if (data.members) saveMembers(data.members);
   clearTimeout(_saveDebounceTimer);
   _saveDebounceTimer = setTimeout(() => {
     COLLECTIONS.forEach(col => {
       if (data[col]) {
-        data[col].forEach(item => {
-          if (item.id) {
-            apiCall('PUT', `/api/data/${col}/${item.id}`, item)
-              .catch(err => console.error(`同步 ${col}/${item.id} 失敗:`, err));
-          }
-        });
+        if (col === 'schedules') {
+          // schedules 用全量同步（POST sync 單一集合），避免刪除後殘留
+          apiCall('POST', '/api/data/sync', { [col]: data[col] })
+            .catch(err => console.error(`同步 schedules 失敗:`, err));
+        } else {
+          data[col].forEach(item => {
+            if (item.id) {
+              apiCall('PUT', `/api/data/${col}/${item.id}`, item)
+                .catch(err => console.error(`同步 ${col}/${item.id} 失敗:`, err));
+            }
+          });
+        }
       }
     });
   }, 500);
