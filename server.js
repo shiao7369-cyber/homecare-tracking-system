@@ -497,7 +497,7 @@ app.put('/api/change-password', requireAuth, async (req, res) => {
 });
 
 // ===== 資料同步 API（PostgreSQL）=====
-const DATA_COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
+const DATA_COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings', 'schedules'];
 
 // 讀取所有資料
 app.get('/api/data', requireAuth, async (req, res) => {

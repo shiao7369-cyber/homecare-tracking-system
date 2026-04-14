@@ -252,7 +252,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 // ===== 雲端資料讀寫 =====
-const COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings'];
+const COLLECTIONS = ['members', 'cases', 'opinions', 'services', 'billings', 'schedules'];
 
 async function loadCloudData() {
   try {
@@ -270,7 +270,18 @@ async function loadCloudData() {
       }
       db = { members: _members, cases: cloudData.cases || [],
              opinions: cloudData.opinions || [], services: cloudData.services || [],
-             billings: cloudData.billings || [], diseases: [] };
+             billings: cloudData.billings || [], schedules: cloudData.schedules || [], diseases: [] };
+      // 行程資料雙向同步
+      if (db.schedules && db.schedules.length > 0) {
+        // 雲端有行程 → 寫入 localStorage 供 getScheduleData() 讀取
+        localStorage.setItem('homecare_schedule', JSON.stringify(db.schedules));
+      } else {
+        // 雲端無行程 → 從 localStorage 補回，下次 saveDB 時會推到雲端
+        try {
+          const localSchedules = JSON.parse(localStorage.getItem('homecare_schedule') || '[]');
+          if (localSchedules.length > 0) db.schedules = localSchedules;
+        } catch(e) {}
+      }
       // 合併本地 geocache 座標：如果雲端個案沒有座標但本地快取有，回寫
       try {
         const geoCache = JSON.parse(localStorage.getItem('geocache') || '{}');

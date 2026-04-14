@@ -271,6 +271,109 @@
 
   .route-date-select { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
   .route-date-select label { font-weight:600; font-size:0.9rem; }
+
+  /* ===== 訪視路線獨立頁面 ===== */
+  .route-page-header {
+    background:#fff; border-radius:var(--radius, 8px); box-shadow:0 1px 3px rgba(0,0,0,.1);
+    padding:1rem 1.25rem; margin-bottom:.75rem;
+  }
+  .route-page-date { font-size:1.05rem; font-weight:700; margin-bottom:.5rem; }
+  .route-page-stats {
+    display:flex; flex-wrap:wrap; gap:8px;
+  }
+  .route-page-stat {
+    display:flex; align-items:center; gap:4px;
+    background:var(--gray-50, #f8fafc); padding:6px 12px; border-radius:8px;
+    font-size:.82rem; color:var(--gray-600, #475569);
+  }
+  .route-page-stat strong { color:var(--gray-800, #1e293b); margin:0 2px; }
+  .route-page-stops {
+    display:flex; flex-direction:column;
+  }
+  .route-page-stop {
+    display:flex; gap:12px; align-items:flex-start;
+    background:#fff; border-radius:var(--radius, 8px); box-shadow:0 1px 3px rgba(0,0,0,.1);
+    padding:12px 14px; margin-bottom:2px;
+  }
+  .route-page-stop-num {
+    width:34px; height:34px; border-radius:50%; color:#fff; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    font-weight:700; font-size:.9rem; box-shadow:0 1px 3px rgba(0,0,0,.2);
+    margin-top:2px;
+  }
+  .route-page-stop-body { flex:1; min-width:0; }
+  .route-page-stop-header {
+    display:flex; justify-content:space-between; align-items:center; gap:8px;
+    margin-bottom:4px;
+  }
+  .route-page-stop-name { font-weight:700; font-size:.95rem; }
+  .route-page-stop-time {
+    font-size:.9rem; font-weight:700; color:var(--primary, #2563eb);
+    white-space:nowrap;
+  }
+  .route-page-stop-meta {
+    font-size:.8rem; color:var(--gray-500, #64748b); margin-top:2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .route-page-stop-warn {
+    font-size:.75rem; color:#d97706; margin-top:3px;
+  }
+  .route-page-travel {
+    display:flex; align-items:center; gap:8px; padding:4px 0 4px 16px;
+  }
+  .route-page-travel-line {
+    width:0; height:20px; border-left:2px dashed var(--primary, #2563eb); opacity:.4;
+    margin-left:15px;
+  }
+  .route-page-travel span {
+    font-size:.78rem; color:var(--gray-400, #94a3b8); font-weight:500;
+  }
+  .route-page-warn {
+    background:var(--warning-light, #fef3c7); color:var(--warning, #d97706);
+    border-radius:var(--radius, 8px); padding:.75rem 1rem; margin-top:.5rem;
+    font-size:.82rem;
+  }
+
+  /* ===== 行程表 RWD ===== */
+  @media (max-width: 768px) {
+    #page-schedule { padding:0.25rem !important; }
+    .schedule-grid { min-width:600px; font-size:0.75rem; grid-template-columns:50px repeat(7,1fr); }
+    .schedule-header { padding:6px 2px; font-size:0.75rem; }
+    .schedule-header .day-num { width:26px; height:26px; font-size:0.9rem; }
+    .schedule-cell { min-height:36px; }
+    .visit-card { font-size:0.7rem; padding:2px 4px; margin:1px 2px; }
+    .schedule-day-time { width:54px; min-width:54px; font-size:0.75rem; }
+    .visit-card-day { padding:6px 8px; }
+    .visit-card-day .visit-name-lg { font-size:0.88rem; }
+    .schedule-month-cell { min-height:70px; padding:3px 4px; }
+    .month-visit-item { font-size:0.65rem; }
+    /* 行程表容器水平捲動 */
+    .schedule-scroll-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .schedule-stats { gap:8px; font-size:0.78rem; }
+    .visit-route-panel { padding:8px 10px; }
+    .visit-route-header { flex-direction:column; align-items:flex-start; gap:4px; }
+    .visit-route-stats { gap:6px; }
+    .visit-route-stats .route-stat { padding:4px 8px; font-size:0.76rem; }
+    .visit-route-stops { max-height:200px; }
+    .route-stop-card { padding:8px 10px; gap:6px; }
+  }
+
+  /* ===== 個案地圖 RWD ===== */
+  @media (max-width: 768px) {
+    #page-casemap.active { padding:0.25rem !important; }
+    #page-casemap .page-toolbar { padding:0 0.5rem; flex-direction:column; gap:4px; }
+    #page-casemap #casemap-container { min-height:350px; }
+    .casemap-geocode-bar { padding:4px 0.5rem; font-size:0.78rem; }
+    .casemap-search-box input { width:140px; }
+    .casemap-mode-btns button { padding:4px 8px; font-size:0.75rem; }
+  }
+
+  /* ===== 登入頁 RWD ===== */
+  @media (max-width: 480px) {
+    .login-card { padding:2rem 1.5rem; width:92%; }
+    .login-brand { font-size:2.5rem; }
+    .login-card h2 { font-size:1.15rem; }
+  }
 </style>
 </head>
 <body>
@@ -327,6 +430,9 @@
     <a href="#" class="nav-item" data-page="schedule">
       <span class="nav-icon">📅</span><span class="nav-label">訪視行程</span>
     </a>
+    <a href="#" class="nav-item" data-page="route">
+      <span class="nav-icon">🚗</span><span class="nav-label">訪視路線</span>
+    </a>
     <a href="#" class="nav-item" data-page="casemap">
       <span class="nav-icon">🗺️</span><span class="nav-label">個案地圖</span>
     </a>
@@ -359,6 +465,40 @@
   ⚠ 您已閒置超過 25 分鐘，5 分鐘後將自動登出。
   <button onclick="resetIdleTimer()" style="margin-left:1rem;padding:.25rem .75rem;border:1px solid #fff;background:transparent;color:#fff;border-radius:4px;cursor:pointer;font-weight:600;">延長登入</button>
 </div>
+
+<!-- ===== 底部導航列（手機版） ===== -->
+<nav id="bottom-nav">
+  <button class="bnav-item active" data-page="dashboard">
+    <span class="bnav-icon">📊</span><span>儀表板</span>
+  </button>
+  <button class="bnav-item" data-page="cases">
+    <span class="bnav-icon">📋</span><span>個案</span>
+  </button>
+  <button class="bnav-item" data-page="services">
+    <span class="bnav-icon">🩺</span><span>服務</span>
+  </button>
+  <button class="bnav-item" data-page="route">
+    <span class="bnav-icon">🚗</span><span>路線</span>
+  </button>
+  <button class="bnav-item" data-page="alerts">
+    <span class="bnav-icon">🔔</span><span>警示</span>
+    <span class="bnav-badge" id="bnav-alert-badge" style="display:none">0</span>
+  </button>
+  <div class="bnav-item" id="bnav-more-btn">
+    <span class="bnav-icon">⋯</span><span>更多</span>
+  </div>
+  <div class="bnav-more-menu" id="bnav-more-menu">
+    <div class="bnav-menu-item" data-page="schedule">📅 訪視行程</div>
+    <div class="bnav-menu-item" data-page="members">👨‍⚕️ 成員管理</div>
+    <div class="bnav-menu-item" data-page="opinion">📄 醫師意見書</div>
+    <div class="bnav-menu-item" data-page="billing">💰 費用申報</div>
+    <div class="bnav-menu-item" data-page="casemap">🗺️ 個案地圖</div>
+    <div class="bnav-menu-item" data-page="reports">📈 報表匯出</div>
+  </div>
+</nav>
+
+<!-- ===== 側邊欄背景遮罩 ===== -->
+<div id="sidebar-overlay"></div>
 
 <!-- ===== 主內容區 ===== -->
 <main id="main-content">
@@ -690,6 +830,25 @@
     <!-- 路線規劃面板 -->
     <div id="route-panel" style="display:none"></div>
     <div id="casemap-container" style="width:100%;border-radius:12px;overflow:hidden;border:1px solid #e0e0e0;"></div>
+  </section>
+
+  <!-- ====== 訪視路線（獨立頁面） ====== -->
+  <section id="page-route" class="page">
+    <div class="page-toolbar">
+      <div class="toolbar-left" style="flex-wrap:wrap;gap:6px;align-items:center;">
+        <label style="font-weight:600;font-size:.9rem;">📅 日期：</label>
+        <input type="date" class="form-input" id="route-page-date" style="width:auto;">
+        <select class="form-select" id="route-page-doctor">
+          <option value="">全部醫師</option>
+        </select>
+        <button class="btn btn-sm btn-primary" onclick="renderRoutePage()">查詢路線</button>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-sm btn-outline" onclick="_routePageOptimize()">🔄 最佳化順序</button>
+        <button class="btn btn-sm btn-outline" onclick="switchPage('schedule')">📅 回行程表</button>
+      </div>
+    </div>
+    <div id="route-page-content"></div>
   </section>
 
   <!-- ====== 警示待辦 ====== -->

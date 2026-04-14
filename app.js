@@ -32,11 +32,113 @@ function debounce(fn, delay = 300) {
 // ===== 初始化 =====
 // 由 firebase-config.js 的 onAuthStateChanged 觸發
 document.addEventListener('DOMContentLoaded', () => {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+
+  // 側邊欄切換
   document.getElementById('sidebar-toggle').addEventListener('click', () => {
-    document.getElementById('sidebar').classList.toggle('collapsed');
-    document.getElementById('sidebar').classList.toggle('open');
+    sidebar.classList.toggle('collapsed');
+    sidebar.classList.toggle('open');
+    document.body.classList.toggle('sidebar-open');
   });
+
+  // 點遮罩關閉側邊欄
+  if (overlay) {
+    overlay.addEventListener('click', () => {
+      sidebar.classList.remove('open');
+      sidebar.classList.add('collapsed');
+      document.body.classList.remove('sidebar-open');
+    });
+  }
+
+  // ===== 底部導航列邏輯 =====
+  const bottomNav = document.getElementById('bottom-nav');
+  if (bottomNav) {
+    const moreBtn = document.getElementById('bnav-more-btn');
+    const moreMenu = document.getElementById('bnav-more-menu');
+
+    // 主要導航按鈕
+    bottomNav.querySelectorAll('.bnav-item[data-page]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const page = btn.dataset.page;
+        if (page) {
+          switchPage(page);
+          updateBottomNav(page);
+        }
+        if (moreMenu) moreMenu.classList.remove('open');
+      });
+    });
+
+    // 更多按鈕
+    let moreMenuOpen = false;
+    if (moreBtn) {
+      moreBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        moreMenuOpen = !moreMenuOpen;
+        moreMenu.classList.toggle('open', moreMenuOpen);
+      });
+    }
+
+    // 更多選單項目
+    if (moreMenu) {
+      moreMenu.querySelectorAll('.bnav-menu-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const page = item.dataset.page;
+          if (page) {
+            switchPage(page);
+            updateBottomNav(page);
+          }
+          moreMenuOpen = false;
+          moreMenu.classList.remove('open');
+        });
+      });
+    }
+
+    // 點擊其他地方關閉更多選單
+    document.addEventListener('click', () => {
+      if (moreMenu && moreMenuOpen) {
+        moreMenuOpen = false;
+        moreMenu.classList.remove('open');
+      }
+    });
+  }
 });
+
+// 更新底部導航的 active 狀態
+function updateBottomNav(page) {
+  const bottomNav = document.getElementById('bottom-nav');
+  if (!bottomNav) return;
+  const mainPages = ['dashboard', 'cases', 'services', 'schedule', 'alerts'];
+  // 清除所有 active
+  bottomNav.querySelectorAll('.bnav-item').forEach(b => b.classList.remove('active'));
+  bottomNav.querySelectorAll('.bnav-menu-item').forEach(b => b.classList.remove('active'));
+
+  const mainBtn = bottomNav.querySelector(`.bnav-item[data-page="${page}"]`);
+  if (mainBtn) {
+    mainBtn.classList.add('active');
+  } else {
+    // 在更多選單裡
+    const menuItem = bottomNav.querySelector(`.bnav-menu-item[data-page="${page}"]`);
+    if (menuItem) menuItem.classList.add('active');
+    const moreBtn = document.getElementById('bnav-more-btn');
+    if (moreBtn) moreBtn.classList.add('active');
+  }
+}
+
+// 更新底部警示數字
+function updateBottomNavBadge(count) {
+  const badge = document.getElementById('bnav-alert-badge');
+  if (!badge) return;
+  if (count > 0) {
+    badge.textContent = count > 99 ? '99+' : count;
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
 
 // ===== 導航 =====
 function initNav() {
@@ -52,7 +154,7 @@ function initNav() {
 const pageTitles = {
   dashboard: '主控儀表板', cases: '個案管理', members: '成員管理',
   services: '服務紀錄', opinion: '醫師意見書', billing: '費用申報',
-  schedule: '訪視行程', casemap: '個案地圖', alerts: '警示與待辦',
+  schedule: '訪視行程', route: '訪視路線', casemap: '個案地圖', alerts: '警示與待辦',
   reports: '報表匯出', users: '使用者管理'
 };
 
@@ -65,10 +167,21 @@ function switchPage(page) {
   if (nav) nav.classList.add('active');
   document.getElementById('page-title').textContent = pageTitles[page] || '';
 
+  // 更新底部導航
+  updateBottomNav(page);
+
+  // 手機版切頁時自動關閉側邊欄
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar && sidebar.classList.contains('open')) {
+    sidebar.classList.remove('open');
+    sidebar.classList.add('collapsed');
+    document.body.classList.remove('sidebar-open');
+  }
+
   const renderers = {
     dashboard: renderDashboard, cases: renderCases, members: renderMembers,
     services: renderServices, opinion: renderOpinions, billing: renderBilling,
-    schedule: renderSchedule, casemap: renderCaseMap, alerts: renderAlerts, users: renderUserManagement
+    schedule: renderSchedule, route: renderRoutePage, casemap: renderCaseMap, alerts: renderAlerts, users: renderUserManagement
   };
   if (renderers[page]) renderers[page]();
 }
@@ -2418,7 +2531,16 @@ let _scheduleViewMode = 'week'; // 'day' | 'week' | 'month'
 let _scheduleCurrentDate = null; // 日檢視用的日期
 
 function getScheduleData() {
-  try { return JSON.parse(localStorage.getItem(SCHEDULE_KEY) || '[]'); } catch { return []; }
+  try {
+    const local = JSON.parse(localStorage.getItem(SCHEDULE_KEY) || '[]');
+    if (local.length > 0) return local;
+    // localStorage 無資料時，嘗試從 db.schedules 還原
+    if (db && db.schedules && db.schedules.length > 0) {
+      localStorage.setItem(SCHEDULE_KEY, JSON.stringify(db.schedules));
+      return db.schedules;
+    }
+    return [];
+  } catch { return []; }
 }
 function saveScheduleData(data) {
   localStorage.setItem(SCHEDULE_KEY, JSON.stringify(data));
@@ -3467,6 +3589,248 @@ function clearVisitRoute() {
   renderCaseMap(); // 恢復正常地圖
 }
 
+// ==========================================
+//  訪視路線 — 獨立頁面（手機友善）
+// ==========================================
+let _routePageData = null;
+
+function renderRoutePage() {
+  const dateInput = document.getElementById('route-page-date');
+  const docSelect = document.getElementById('route-page-doctor');
+  if (!dateInput.value) dateInput.value = fmt(new Date());
+
+  // 填醫師下拉
+  const docs = (db.members || []).filter(m => m.role === 'doctor');
+  const curVal = docSelect.value;
+  docSelect.innerHTML = '<option value="">全部醫師</option>' +
+    docs.map(d => `<option value="${d.id}" ${d.id === curVal ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
+
+  _buildRoutePage(dateInput.value, docSelect.value);
+}
+
+function _buildRoutePage(dateStr, filterDoc) {
+  const container = document.getElementById('route-page-content');
+  const schedules = getScheduleData();
+  const dayVisits = schedules.filter(s =>
+    s.date === dateStr && s.status !== 'cancelled' && (!filterDoc || s.doctorId === filterDoc)
+  ).sort((a, b) => a.time.localeCompare(b.time));
+
+  if (dayVisits.length === 0) {
+    const dayNames = ['日','一','二','三','四','五','六'];
+    const dd = new Date(dateStr + 'T00:00:00');
+    container.innerHTML = `
+      <div class="card" style="margin-top:1rem;text-align:center;padding:3rem 1rem;">
+        <div style="font-size:2.5rem;margin-bottom:.5rem;">📭</div>
+        <div style="font-size:1rem;font-weight:600;color:var(--gray-600);">${dateStr} (週${dayNames[dd.getDay()]}) 無訪視排程</div>
+        <div style="font-size:.85rem;color:var(--gray-400);margin-top:.5rem;">請先到「訪視行程」新增排程</div>
+        <button class="btn btn-sm btn-primary" style="margin-top:1rem" onclick="switchPage('schedule')">📅 前往行程表</button>
+      </div>`;
+    _routePageData = null;
+    return;
+  }
+
+  // 收集個案座標
+  const geoCache = typeof getGeoCache === 'function' ? getGeoCache() : {};
+  const visitCases = dayVisits.map(v => {
+    const c = findCase(db, v.caseId);
+    let lat = c?.lat, lng = c?.lng;
+    if ((!lat || !lng) && c) {
+      const cacheKey = typeof getCaseGeoAddress === 'function' ? getCaseGeoAddress(c) : '';
+      if (cacheKey && geoCache[cacheKey]) { lat = geoCache[cacheKey][0]; lng = geoCache[cacheKey][1]; }
+      if ((!lat || !lng) && c.address && geoCache[c.address]) { lat = geoCache[c.address][0]; lng = geoCache[c.address][1]; }
+    }
+    if ((!lat || !lng) && c) { lat = c._fallbackLat; lng = c._fallbackLng; }
+    return {
+      visit: v, case: c, lat, lng,
+      name: c?.name || v.caseName,
+      address: c?.address || c?.district || '',
+      approx: !(c?.lat && c?.lng)
+    };
+  });
+
+  const withCoords = visitCases.filter(vc => vc.lat && vc.lng);
+  _routePageData = { dateStr, filterDoc, visitCases: withCoords, allVisits: visitCases };
+
+  // 嘗試計算路線（有座標時才計算）
+  if (withCoords.length >= 2) {
+    _calcRoutePageRoute(withCoords, visitCases, dateStr);
+  } else {
+    // 即使沒有座標也顯示所有站點清單
+    _renderRoutePageContent(visitCases, visitCases, [], dateStr);
+  }
+}
+
+async function _calcRoutePageRoute(withCoords, allVisits, dateStr) {
+  const container = document.getElementById('route-page-content');
+  container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--gray-400);">🚗 路線計算中...</div>';
+
+  const coords = withCoords.map(vc => `${vc.lng},${vc.lat}`).join(';');
+  try {
+    const data = await apiCall('GET', `/api/route?coords=${encodeURIComponent(coords)}`);
+    if (data.routes && data.routes.length > 0) {
+      const route = data.routes[0];
+      const legs = route.legs || [];
+      const legData = [];
+      const firstTime = withCoords[0].visit.time;
+
+      for (let i = 0; i < withCoords.length; i++) {
+        if (i === 0) {
+          legData.push({
+            distKm: 0, durationMin: 0,
+            etaArrival: firstTime,
+            etaDeparture: addMinutes(firstTime, withCoords[0].visit.duration || 30),
+            travelFromPrev: null
+          });
+        } else {
+          const leg = legs[i - 1];
+          const travelMin = leg ? Math.round(leg.duration / 60) : 0;
+          const travelKm = leg ? (leg.distance / 1000).toFixed(1) : 0;
+          const prevDep = legData[i-1].etaDeparture;
+          const [ph, pm] = prevDep.split(':').map(Number);
+          const arrivalMin = ph * 60 + pm + travelMin;
+          const etaArrival = `${String(Math.floor(arrivalMin/60)).padStart(2,'0')}:${String(arrivalMin%60).padStart(2,'0')}`;
+          const depMin = arrivalMin + (withCoords[i].visit.duration || 30);
+          const etaDeparture = `${String(Math.floor(depMin/60)).padStart(2,'0')}:${String(depMin%60).padStart(2,'0')}`;
+          legData.push({ distKm: travelKm, durationMin: travelMin, etaArrival, etaDeparture, travelFromPrev: `${travelKm}km / ${travelMin}分` });
+        }
+      }
+
+      const totalKm = (route.distance / 1000).toFixed(1);
+      const totalMin = Math.round(route.duration / 60);
+      _renderRoutePageContent(withCoords, allVisits, legData, dateStr, { totalKm, totalMin });
+    } else {
+      _renderRoutePageContent(withCoords, allVisits, [], dateStr);
+    }
+  } catch (e) {
+    _renderRoutePageContent(withCoords, allVisits, [], dateStr, null, e.message);
+  }
+}
+
+function _renderRoutePageContent(visitCases, allVisits, legData, dateStr, routeInfo, error) {
+  const container = document.getElementById('route-page-content');
+  const { docColorMap, DOC_COLORS } = _scheduleDocSetup();
+  const dayNames = ['日','一','二','三','四','五','六'];
+  const dd = new Date(dateStr + 'T00:00:00');
+  const dateLabel = `${dd.getFullYear()}年${dd.getMonth()+1}月${dd.getDate()}日 (週${dayNames[dd.getDay()]})`;
+  const noCoords = allVisits.filter(vc => !vc.lat || !vc.lng);
+
+  // 統計區
+  let statsHtml = '';
+  if (routeInfo) {
+    const totalVisitMin = visitCases.reduce((s, vc) => s + (vc.visit.duration || 30), 0);
+    const totalHours = Math.floor((routeInfo.totalMin + totalVisitMin) / 60);
+    const totalRemain = (routeInfo.totalMin + totalVisitMin) % 60;
+    const lastDep = legData.length > 0 ? legData[legData.length - 1].etaDeparture : '--:--';
+    statsHtml = `
+      <div class="route-page-stats">
+        <div class="route-page-stat"><span>📍</span><strong>${visitCases.length}</strong> 站</div>
+        <div class="route-page-stat"><span>🛣️</span><strong>${routeInfo.totalKm}</strong> km</div>
+        <div class="route-page-stat"><span>🚗</span><strong>${routeInfo.totalMin}</strong> 分鐘</div>
+        <div class="route-page-stat"><span>⏱️</span><strong>${totalHours > 0 ? totalHours + 'h' : ''}${totalRemain}m</strong></div>
+        <div class="route-page-stat"><span>🏁</span><strong>${lastDep}</strong> 完成</div>
+      </div>`;
+  } else if (error) {
+    statsHtml = `<div style="color:var(--danger);padding:.5rem 0;font-size:.85rem;">❌ 路線計算失敗：${error}</div>`;
+  } else {
+    statsHtml = `<div class="route-page-stats"><div class="route-page-stat"><span>📍</span><strong>${visitCases.length}</strong> 站</div></div>`;
+  }
+
+  // 站點卡片
+  let stopsHtml = '';
+  visitCases.forEach((vc, i) => {
+    const docIdx = docColorMap[vc.visit.doctorId] ?? 0;
+    const color = DOC_COLORS[docIdx];
+    const doc = findMember(db, vc.visit.doctorId);
+    const endTime = addMinutes(vc.visit.time, vc.visit.duration || 30);
+    const typeIcon = { home:'🏠', phone:'📞', video:'📹' }[vc.visit.type] || '🏠';
+    const leg = legData[i];
+    const etaArrival = leg?.etaArrival || vc.visit.time;
+    const etaDeparture = leg?.etaDeparture || endTime;
+
+    // 行車段
+    if (i > 0 && leg?.travelFromPrev) {
+      stopsHtml += `<div class="route-page-travel">
+        <div class="route-page-travel-line" style="border-color:${color}"></div>
+        <span>🚗 ${leg.travelFromPrev}</span>
+      </div>`;
+    }
+
+    stopsHtml += `
+      <div class="route-page-stop">
+        <div class="route-page-stop-num" style="background:${color}">${i + 1}</div>
+        <div class="route-page-stop-body">
+          <div class="route-page-stop-header">
+            <span class="route-page-stop-name">${esc(vc.name)}</span>
+            <span class="route-page-stop-time">🕐 ${etaArrival}</span>
+          </div>
+          <div class="route-page-stop-meta">
+            ${typeIcon} ${esc(vc.address || '地址未登錄')}
+          </div>
+          <div class="route-page-stop-meta">
+            👨‍⚕️ ${doc ? esc(doc.name) : '-'} ・ ${vc.visit.duration || 30}分鐘 ・ 離開 ${etaDeparture}
+          </div>
+          ${vc.approx ? '<div class="route-page-stop-warn">⚠ 約略位置</div>' : ''}
+        </div>
+      </div>`;
+  });
+
+  // 無座標個案提示
+  let warnHtml = '';
+  if (noCoords.length > 0) {
+    warnHtml = `<div class="route-page-warn">⚠️ 無法定位：${noCoords.map(vc => vc.name).join('、')}，請至個案地圖進行地址定位</div>`;
+  }
+
+  container.innerHTML = `
+    <div class="route-page-header">
+      <div class="route-page-date">📅 ${dateLabel}</div>
+      ${statsHtml}
+    </div>
+    <div class="route-page-stops">
+      ${stopsHtml}
+    </div>
+    ${warnHtml}
+    <div style="text-align:center;padding:1rem;">
+      <button class="btn btn-sm btn-outline" onclick="_launchVisitRoute('${dateStr}','${_routePageData?.filterDoc || ''}')">🗺️ 在地圖上查看</button>
+    </div>`;
+}
+
+async function _routePageOptimize() {
+  if (!_routePageData || _routePageData.visitCases.length < 2) {
+    showToast('至少需要 2 站才能最佳化', 'warning');
+    return;
+  }
+  const { visitCases } = _routePageData;
+
+  // TSP 最近鄰法
+  const ordered = [visitCases[0]];
+  const remaining = visitCases.slice(1);
+  while (remaining.length > 0) {
+    const last = ordered[ordered.length - 1];
+    let nearest = 0, minDist = Infinity;
+    remaining.forEach((vc, i) => {
+      const d = Math.sqrt((vc.lat - last.lat) ** 2 + (vc.lng - last.lng) ** 2);
+      if (d < minDist) { minDist = d; nearest = i; }
+    });
+    ordered.push(remaining.splice(nearest, 1)[0]);
+  }
+
+  // 重新指定時間
+  const times = visitCases.map(vc => vc.visit.time).sort();
+  ordered.forEach((vc, i) => { vc.visit.time = times[i]; });
+
+  // 更新 schedule data
+  const allSchedules = getScheduleData();
+  ordered.forEach(vc => {
+    const idx = allSchedules.findIndex(s => s.id === vc.visit.id);
+    if (idx >= 0) allSchedules[idx].time = vc.visit.time;
+  });
+  saveScheduleData(allSchedules);
+
+  _routePageData.visitCases = ordered;
+  showToast('已依最短路徑重新排序', 'success');
+  renderRoutePage();
+}
+
 function computeKPI(doctorFilter) {
   const active = getActiveCases(db).filter(c => {
     if (!doctorFilter) return true;
@@ -3863,6 +4227,7 @@ function updateAlertBadge() {
   const badge = document.getElementById('alert-badge');
   badge.textContent = count;
   badge.style.display = count > 0 ? 'block' : 'none';
+  updateBottomNavBadge(count);
 }
 
 // ==========================================
