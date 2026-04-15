@@ -272,15 +272,31 @@ async function loadCloudData() {
              opinions: cloudData.opinions || [], services: cloudData.services || [],
              billings: cloudData.billings || [], schedules: cloudData.schedules || [], diseases: [] };
       // 行程資料雙向同步
-      if (db.schedules && db.schedules.length > 0) {
-        // 雲端有行程 → 寫入 localStorage 供 getScheduleData() 讀取
-        localStorage.setItem('homecare_schedule', JSON.stringify(db.schedules));
-      } else {
-        // 雲端無行程 → 從 localStorage 補回，下次 saveDB 時會推到雲端
-        try {
-          const localSchedules = JSON.parse(localStorage.getItem('homecare_schedule') || '[]');
-          if (localSchedules.length > 0) db.schedules = localSchedules;
-        } catch(e) {}
+      const cloudSchedules = cloudData.schedules || [];
+      const localSchedules = (() => { try { return JSON.parse(localStorage.getItem('homecare_schedule') || '[]'); } catch(e) { return []; } })();
+
+      if (cloudSchedules.length > 0 && localSchedules.length > 0) {
+        // 雙方都有 → 合併（以 id 去重，雲端優先但保留本地獨有的）
+        const merged = [...cloudSchedules];
+        const cloudIds = new Set(cloudSchedules.map(s => s.id));
+        localSchedules.forEach(s => { if (!cloudIds.has(s.id)) merged.push(s); });
+        db.schedules = merged;
+        localStorage.setItem('homecare_schedule', JSON.stringify(merged));
+        // 如果有新增的本地資料，推送到雲端
+        if (merged.length > cloudSchedules.length) {
+          apiCall('POST', '/api/data/sync', { schedules: merged })
+            .catch(e => console.error('行程合併同步失敗:', e));
+        }
+      } else if (cloudSchedules.length > 0) {
+        // 只有雲端有 → 寫入 localStorage
+        db.schedules = cloudSchedules;
+        localStorage.setItem('homecare_schedule', JSON.stringify(cloudSchedules));
+      } else if (localSchedules.length > 0) {
+        // 只有本地有 → 立即推送到雲端
+        db.schedules = localSchedules;
+        console.log('本地有行程但雲端沒有，自動上傳...');
+        apiCall('POST', '/api/data/sync', { schedules: localSchedules })
+          .catch(e => console.error('行程自動上傳失敗:', e));
       }
       // 合併本地 geocache 座標：如果雲端個案沒有座標但本地快取有，回寫
       try {
