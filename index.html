@@ -837,8 +837,8 @@
     <div class="page-toolbar">
       <div class="toolbar-left" style="flex-wrap:wrap;gap:6px;align-items:center;">
         <label style="font-weight:600;font-size:.9rem;">📅 日期：</label>
-        <input type="date" class="form-input" id="route-page-date" style="width:auto;">
-        <select class="form-select" id="route-page-doctor">
+        <input type="date" class="form-input" id="route-page-date" style="width:auto;" onchange="renderRoutePage()">
+        <select class="form-select" id="route-page-doctor" onchange="renderRoutePage()">
           <option value="">全部醫師</option>
         </select>
         <button class="btn btn-sm btn-primary" onclick="renderRoutePage()">查詢路線</button>
