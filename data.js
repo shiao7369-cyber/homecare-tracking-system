@@ -400,36 +400,99 @@ function loadDB() {
 }
 
 function saveDB(data) {
+  invalidateCache();
   localStorage.setItem(DB_KEY, JSON.stringify(data));
 }
 
 function resetDB() {
+  invalidateCache();
   localStorage.removeItem(DB_KEY);
   return loadDB();
 }
 
-// ===== 查詢輔助 =====
-function findCase(db, id) { return db.cases.find(c => c.id === id); }
-function findMember(db, id) { return db.members.find(m => m.id === id); }
-function getDoctors(db) { return db.members.filter(m => m.role === 'doctor'); }
-function getNurses(db) { return db.members.filter(m => m.role === 'nurse'); }
-function getActiveCases(db) { return db.cases.filter(c => c.status === 'active'); }
+// ===== 查詢快取層 =====
+// 所有 lookup maps 集中管理，資料變更時呼叫 invalidateCache() 重建
+let _cache = null;
+
+function invalidateCache() {
+  _cache = null;
+  if (typeof invalidateAlerts === 'function') invalidateAlerts();
+}
+
+function _ensureCache(db) {
+  if (_cache) return _cache;
+  const c = {};
+
+  // memberMap: id → member
+  c.memberMap = new Map();
+  db.members.forEach(m => c.memberMap.set(m.id, m));
+
+  // caseMap: id → case
+  c.caseMap = new Map();
+  db.cases.forEach(cs => c.caseMap.set(cs.id, cs));
+
+  // doctors / nurses / activeCases (常用子集)
+  c.doctors = db.members.filter(m => m.role === 'doctor');
+  c.nurses = db.members.filter(m => m.role === 'nurse');
+  c.activeCases = db.cases.filter(cs => cs.status === 'active');
+
+  // servicesByCase: caseId → [services] (按日期降冪)
+  c.servicesByCase = new Map();
+  db.services.forEach(s => {
+    if (!c.servicesByCase.has(s.caseId)) c.servicesByCase.set(s.caseId, []);
+    c.servicesByCase.get(s.caseId).push(s);
+  });
+  c.servicesByCase.forEach((arr) => arr.sort((a, b) => b.date.localeCompare(a.date)));
+
+  // opinionsByCase: caseId → [opinions] (按日期降冪)
+  c.opinionsByCase = new Map();
+  db.opinions.forEach(o => {
+    if (!c.opinionsByCase.has(o.caseId)) c.opinionsByCase.set(o.caseId, []);
+    c.opinionsByCase.get(o.caseId).push(o);
+  });
+  c.opinionsByCase.forEach((arr) => arr.sort((a, b) => b.issueDate.localeCompare(a.issueDate)));
+
+  // 預計算：本月年月字串
+  c.ym = fmt(new Date()).substring(0, 7);
+  c.yy = String(new Date().getFullYear());
+
+  // caseCountByMember: memberId → count
+  c.caseCountByMember = new Map();
+  db.members.forEach(m => c.caseCountByMember.set(m.id, 0));
+  db.cases.forEach(cs => {
+    if (cs.status !== 'active') return;
+    if (cs.doctorId && c.caseCountByMember.has(cs.doctorId))
+      c.caseCountByMember.set(cs.doctorId, c.caseCountByMember.get(cs.doctorId) + 1);
+    if (cs.nurseId && c.caseCountByMember.has(cs.nurseId))
+      c.caseCountByMember.set(cs.nurseId, c.caseCountByMember.get(cs.nurseId) + 1);
+    // doctorName fallback
+    if (cs.doctorName && !cs.doctorId) {
+      const doc = db.members.find(m => m.name === cs.doctorName);
+      if (doc) c.caseCountByMember.set(doc.id, c.caseCountByMember.get(doc.id) + 1);
+    }
+  });
+
+  _cache = c;
+  return c;
+}
+
+// ===== 查詢輔助（使用快取） =====
+function findCase(db, id) { return _ensureCache(db).caseMap.get(id) || null; }
+function findMember(db, id) { return _ensureCache(db).memberMap.get(id) || null; }
+function getDoctors(db) { return _ensureCache(db).doctors; }
+function getNurses(db) { return _ensureCache(db).nurses; }
+function getActiveCases(db) { return _ensureCache(db).activeCases; }
 
 function getCaseCountByMember(db, memberId) {
-  const member = db.members.find(m => m.id === memberId);
-  const memberName = member ? member.name : '';
-  return db.cases.filter(c => c.status === 'active' && (
-    c.doctorId === memberId || c.nurseId === memberId ||
-    (memberName && c.doctorName === memberName)
-  )).length;
+  return _ensureCache(db).caseCountByMember.get(memberId) || 0;
 }
 
 function getServicesByCase(db, caseId) {
-  return db.services.filter(s => s.caseId === caseId).sort((a, b) => b.date.localeCompare(a.date));
+  return _ensureCache(db).servicesByCase.get(caseId) || [];
 }
 
 function getOpinionsByCase(db, caseId) {
-  return db.opinions.filter(o => o.caseId === caseId).sort((a, b) => b.issueDate.localeCompare(a.issueDate));
+  return _ensureCache(db).opinionsByCase.get(caseId) || [];
 }
 
 function getLatestOpinion(db, caseId) {
@@ -438,24 +501,27 @@ function getLatestOpinion(db, caseId) {
 }
 
 function getServiceThisMonth(db, caseId) {
-  const ym = fmt(new Date()).substring(0, 7);
-  return db.services.filter(s => s.caseId === caseId && s.date.startsWith(ym));
+  const ym = _ensureCache(db).ym;
+  const svcs = _ensureCache(db).servicesByCase.get(caseId);
+  return svcs ? svcs.filter(s => s.date.startsWith(ym)) : [];
 }
 
 function getHomeVisitsThisYear(db, caseId) {
-  const yy = String(new Date().getFullYear());
-  return db.services.filter(s => s.caseId === caseId && s.type === 'home' && s.date.startsWith(yy));
+  const yy = _ensureCache(db).yy;
+  const svcs = _ensureCache(db).servicesByCase.get(caseId);
+  return svcs ? svcs.filter(s => s.type === 'home' && s.date.startsWith(yy)) : [];
 }
 
 function getPhoneVisitsThisMonth(db, caseId) {
-  const ym = fmt(new Date()).substring(0, 7);
-  return db.services.filter(s => s.caseId === caseId && s.type === 'phone' && s.date.startsWith(ym));
+  const ym = _ensureCache(db).ym;
+  const svcs = _ensureCache(db).servicesByCase.get(caseId);
+  return svcs ? svcs.filter(s => s.type === 'phone' && s.date.startsWith(ym)) : [];
 }
 
 function getLastNurseHomeVisit(db, caseId) {
-  return db.services
-    .filter(s => s.caseId === caseId && s.type === 'home' && s.nurseId)
-    .sort((a, b) => b.date.localeCompare(a.date))[0] || null;
+  const svcs = _ensureCache(db).servicesByCase.get(caseId);
+  if (!svcs) return null;
+  return svcs.find(s => s.type === 'home' && s.nurseId) || null;
 }
 
 function getOpinionExpiryInfo(db, caseId) {

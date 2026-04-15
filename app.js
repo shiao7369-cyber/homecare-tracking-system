@@ -354,7 +354,7 @@ function renderDashboard() {
   }).join('');
 
   // Recent Services
-  const recentSvc = db.services.sort((a,b) => b.date.localeCompare(a.date)).slice(0, 7);
+  const recentSvc = [...db.services].sort((a,b) => b.date.localeCompare(a.date)).slice(0, 7);
   const recentContainer = document.getElementById('recent-services-list');
   recentContainer.innerHTML = recentSvc.map(s => {
     const c = findCase(db, s.caseId);
@@ -463,9 +463,8 @@ function renderCases() {
       ? `<span class="badge badge-success">電${phoneThisMonth.length}</span>`
       : (c.status === 'active' ? '<span class="badge badge-warning">未電訪</span>' : '-');
 
-    // 上次家訪狀態
-    const lastHomeVisit = db.services.filter(s => s.caseId === c.id && s.type === 'home')
-      .sort((a,b) => b.date.localeCompare(a.date))[0];
+    // 上次家訪狀態（servicesByCase 已按日期降冪排序）
+    const lastHomeVisit = (getServicesByCase(db, c.id)).find(s => s.type === 'home');
     let homeBadge = '-';
     if (lastHomeVisit) {
       const homeAge = daysBetween(lastHomeVisit.date, fmt(new Date()));
@@ -2689,6 +2688,14 @@ function renderScheduleWeek(container) {
     </div>`;
   });
 
+  // 建立 schedule lookup map: "date|time" → [visits]
+  const _schedMap = new Map();
+  weekVisits.forEach(s => {
+    const key = s.date + '|' + s.time;
+    if (!_schedMap.has(key)) _schedMap.set(key, []);
+    _schedMap.get(key).push(s);
+  });
+
   SCHEDULE_SLOTS.forEach(slot => {
     html += `<div class="schedule-period-label">${slot.label}</div>`;
     slot.times.forEach(time => {
@@ -2696,7 +2703,7 @@ function renderScheduleWeek(container) {
       weekDates.forEach(d => {
         const dateStr = fmt(d);
         const isToday = d.getTime() === today.getTime();
-        const cellVisits = schedules.filter(s => s.date === dateStr && s.time === time && (!filterDoc || s.doctorId === filterDoc));
+        const cellVisits = _schedMap.get(dateStr + '|' + time) || [];
         html += `<div class="schedule-cell${isToday ? ' today' : ''}" onclick="openScheduleAdd('${dateStr}','${time}')" data-date="${dateStr}" data-time="${time}">`;
         cellVisits.forEach(v => { html += _visitCardHtml(v, docColorMap); });
         html += '</div>';
@@ -2732,12 +2739,19 @@ function renderScheduleDay(container) {
   });
   html += '</div>';
 
+  // 建立 schedule lookup map: time → [visits]
+  const _daySchedMap = new Map();
+  dayVisits.forEach(s => {
+    if (!_daySchedMap.has(s.time)) _daySchedMap.set(s.time, []);
+    _daySchedMap.get(s.time).push(s);
+  });
+
   // 日檢視使用單欄寬版，時段更詳細
   html += '<div class="schedule-day-grid">';
   SCHEDULE_SLOTS.forEach(slot => {
     html += `<div class="schedule-day-period">${slot.label}</div>`;
     slot.times.forEach(time => {
-      const cellVisits = schedules.filter(s => s.date === dateStr && s.time === time && (!filterDoc || s.doctorId === filterDoc));
+      const cellVisits = _daySchedMap.get(time) || [];
       const hasVisit = cellVisits.length > 0;
       html += `<div class="schedule-day-row${isToday ? ' today' : ''}${hasVisit ? ' has-visit' : ''}" onclick="openScheduleAdd('${dateStr}','${time}')">`;
       html += `<div class="schedule-day-time">${time}</div>`;
@@ -2819,13 +2833,21 @@ function renderScheduleMonth(container) {
     html += `<div class="schedule-month-header">週${dn}</div>`;
   });
 
+  // 建立 schedule lookup map: date → [visits]
+  const _monthSchedMap = new Map();
+  schedules.forEach(s => {
+    if (filterDoc && s.doctorId !== filterDoc) return;
+    if (!_monthSchedMap.has(s.date)) _monthSchedMap.set(s.date, []);
+    _monthSchedMap.get(s.date).push(s);
+  });
+
   // 填充日期格子
   const cursor = new Date(startDate);
   while (cursor <= endDate) {
     const cDateStr = fmt(cursor);
     const isCurrentMonth = cursor.getMonth() === month;
     const isToday = cursor.getTime() === today.getTime();
-    const dayVisits = schedules.filter(s => s.date === cDateStr && (!filterDoc || s.doctorId === filterDoc));
+    const dayVisits = _monthSchedMap.get(cDateStr) || [];
 
     html += `<div class="schedule-month-cell${isCurrentMonth ? '' : ' other-month'}${isToday ? ' today' : ''}" onclick="jumpToDay('${fmt(cursor)}')">`;
     html += `<div class="month-day-num${isToday ? ' today-num' : ''}">${cursor.getDate()}</div>`;
@@ -4038,7 +4060,10 @@ function saveACP(caseId) {
 // ==========================================
 //  警示與待辦
 // ==========================================
+let _alertsCache = null;
+function invalidateAlerts() { _alertsCache = null; }
 function generateAlerts() {
+  if (_alertsCache) return _alertsCache;
   const alerts = [];
   const now = new Date();
   const active = getActiveCases(db);
@@ -4048,7 +4073,7 @@ function generateAlerts() {
     // 本月未服務
     const svcThisMonth = getServiceThisMonth(db, c.id);
     if (svcThisMonth.length === 0) {
-      const lastSvc = db.services.filter(s => s.caseId === c.id).sort((a,b) => b.date.localeCompare(a.date))[0];
+      const lastSvc = getServicesByCase(db, c.id)[0];
       alerts.push({
         level: 'danger', title: `${esc(c.name)} 本月尚未服務`,
         desc: `上次服務: ${lastSvc ? lastSvc.date : '無紀錄'}`,
@@ -4090,8 +4115,7 @@ function generateAlerts() {
     }
 
     // 4個月未家訪
-    const lastHome = db.services.filter(s => s.caseId === c.id && s.type === 'home')
-      .sort((a,b) => b.date.localeCompare(a.date))[0];
+    const lastHome = getServicesByCase(db, c.id).find(s => s.type === 'home');
     if (lastHome) {
       const daysSince = daysBetween(lastHome.date, fmt(now));
       if (daysSince > 120) {
@@ -4108,8 +4132,7 @@ function generateAlerts() {
     if (enrollDaysTotal > 30) {
       const phoneThisMonth = getPhoneVisitsThisMonth(db, c.id);
       if (phoneThisMonth.length === 0) {
-        const lastPhone = db.services.filter(s => s.caseId === c.id && s.type === 'phone')
-          .sort((a,b) => b.date.localeCompare(a.date))[0];
+        const lastPhone = getServicesByCase(db, c.id).find(s => s.type === 'phone');
         alerts.push({
           level: 'warning', title: `${esc(c.name)} 本月尚未電訪`,
           desc: `上次電訪: ${lastPhone ? lastPhone.date : '無紀錄'}`,
@@ -4174,6 +4197,7 @@ function generateAlerts() {
   // 排序: danger > warning > info
   const levelOrder = { danger: 0, warning: 1, info: 2 };
   alerts.sort((a, b) => levelOrder[a.level] - levelOrder[b.level]);
+  _alertsCache = alerts;
   return alerts;
 }
 
@@ -4268,7 +4292,7 @@ function generateReport(type) {
         const d = findMember(db, c.doctorId);
         const n = findMember(db, c.nurseId);
         const phoneCount = getPhoneVisitsThisMonth(db, c.id).length;
-        const lastH = db.services.filter(s => s.caseId === c.id && s.type === 'home').sort((a,b) => b.date.localeCompare(a.date))[0];
+        const lastH = getServicesByCase(db, c.id).find(s => s.type === 'home');
         const opInfo = getOpinionExpiryInfo(db, c.id);
         const opStatus = opInfo.opinion ? (opInfo.opinion.status === 'valid' ? '有效' : opInfo.opinion.status === 'expiring' ? '即將到期' : '已過期') : '未開立';
         csv += `${escCSV(c.id)},${escCSV(c.name)},${c.gender==='M'?'男':'女'},${c.age},${c.cmsLevel},${d?escCSV(d.name):''},${n?escCSV(n.name):''},${escCSV(c.enrollDate)},${c.status==='active'?'收案中':'已結案'},${phoneCount},${lastH?lastH.date:''},${opStatus},${opInfo.opinion?opInfo.opinion.expiryDate:''},${escCSV(c.diagnoses.map(d=>d.name).join(';'))},${c.acpExplained?'已說明':'未說明'}\n`;
