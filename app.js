@@ -4493,6 +4493,499 @@ function _gpsReplayClose() {
   _gpsDashFetchAndRender();
 }
 
+// ==========================================
+//  📂 訪視行程 — 從網路資料夾自動同步（Excel）
+// ==========================================
+// 使用 File System Access API 授權資料夾
+// 解析檔名（0402四下蕭輝哲1）+ 內容 → 產出 schedule 覆蓋系統對應日期
+const EXCEL_SYNC = {
+  DB_NAME: 'schedule_sync',
+  STORE: 'handles',
+  KEY_FOLDER: 'schedule_folder',
+  LS_AUTO: 'schedule_auto_sync',
+  LS_LAST_SYNC: 'schedule_last_sync',
+  LS_SYNCED_FILES: 'schedule_synced_files', // { filename: mtime }
+};
+
+// ----- IndexedDB helper for storing directory handle -----
+function _syncIdbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(EXCEL_SYNC.DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(EXCEL_SYNC.STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function _syncIdbSet(key, value) {
+  const db = await _syncIdbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(EXCEL_SYNC.STORE, 'readwrite');
+    tx.objectStore(EXCEL_SYNC.STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function _syncIdbGet(key) {
+  const db = await _syncIdbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(EXCEL_SYNC.STORE, 'readonly');
+    const req = tx.objectStore(EXCEL_SYNC.STORE).get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function _syncIdbDel(key) {
+  const db = await _syncIdbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(EXCEL_SYNC.STORE, 'readwrite');
+    tx.objectStore(EXCEL_SYNC.STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ----- 檔名解析：0402四下蕭輝哲1.xlsx -----
+// 父資料夾：115年/4月 → 民國 115 年 = 西元 2026
+function _syncParseFilename(name, parentFolderInfo) {
+  // name: "0402四下蕭輝哲1.xlsx"
+  const m = name.match(/^(\d{2})(\d{2})([一二三四五六日])([上下])(.+?)(\d*)\.xlsx?$/);
+  if (!m) return null;
+  const month = parseInt(m[1], 10);
+  const day = parseInt(m[2], 10);
+  const period = m[4] === '上' ? 'morning' : 'afternoon';
+  const doctor = m[5].trim();
+  const stops = m[6] ? parseInt(m[6], 10) : null;
+  // 年份：優先從父資料夾 "115年" 推算，否則用當前年份
+  let year = new Date().getFullYear();
+  if (parentFolderInfo?.year) year = parentFolderInfo.year;
+  const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  return { dateStr, month, day, period, doctor, stops, filename: name };
+}
+
+// 從資料夾名推算年份：115年 → 2026
+function _syncParseYearFromFolder(folderName) {
+  const m = String(folderName || '').match(/^(\d{3})年/);
+  if (!m) return null;
+  return parseInt(m[1], 10) + 1911;
+}
+
+// ----- Excel 解析 -----
+async function _syncParseExcel(file) {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: 'array', cellDates: false, cellNF: false });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws) return [];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
+  if (rows.length < 3) return [];
+
+  // 找欄位 index
+  const header = rows[0].map(h => String(h).replace(/[\r\n\s]/g, ''));
+  const col = {};
+  header.forEach((h, i) => {
+    if (h === '姓名') col.name = i;
+    else if (h === '身份證字號' || h === '身分證字號') col.idNumber = i;
+    else if (h === '照管案號') col.caseNo = i;
+    else if (h === '地址') col.address = i;
+    else if (h === '預計抵達') col.eta = i;
+    else if (h === '訪視時間') col.duration = i;
+    else if (h === '序號') col.seq = i;
+  });
+
+  if (col.name == null) return []; // header 格式不對
+
+  const visits = [];
+  for (let i = 2; i < rows.length; i++) {
+    const r = rows[i];
+    const rawName = String(r[col.name] || '').trim();
+    if (!rawName) continue;
+    // 去掉括號內備註：張莉雪、彭正松\r\n(妻1523)
+    const name = rawName.replace(/[\r\n]/g, '').split(/[（(]/)[0].trim();
+    const idNumber = String(r[col.idNumber] || '').trim().toUpperCase();
+    if (!idNumber) continue;
+    const caseNo = String(r[col.caseNo] || '').trim();
+    const address = String(r[col.address] || '').replace(/[\r\n]+/g, ' ').trim();
+    const etaRaw = r[col.eta];
+    const duration = parseInt(r[col.duration]) || 30;
+    visits.push({
+      seq: parseInt(r[col.seq]) || (i - 1),
+      name, idNumber, caseNo, address,
+      eta: etaRaw, duration
+    });
+  }
+  return visits;
+}
+
+// ETA 1310 → "13:10"；若無 eta 用預設時段
+function _syncFormatTime(eta, period) {
+  if (eta === '' || eta == null) {
+    return period === 'morning' ? '09:00' : '14:00';
+  }
+  const s = String(eta).replace(/[^\d]/g, '').padStart(4, '0');
+  return s.slice(0, 2) + ':' + s.slice(2, 4);
+}
+
+// ----- 授權資料夾 -----
+async function syncScheduleChooseFolder() {
+  if (!('showDirectoryPicker' in window)) {
+    alert('此瀏覽器不支援資料夾授權功能。\n請使用 Chrome / Edge 電腦版。');
+    return null;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'read' });
+    await _syncIdbSet(EXCEL_SYNC.KEY_FOLDER, handle);
+    showToast(`已授權資料夾：${handle.name}`, 'success');
+    return handle;
+  } catch (e) {
+    if (e.name !== 'AbortError') console.error(e);
+    return null;
+  }
+}
+
+async function _syncEnsureFolder(silent) {
+  let handle = await _syncIdbGet(EXCEL_SYNC.KEY_FOLDER);
+  if (!handle) {
+    if (silent) return null;
+    return await syncScheduleChooseFolder();
+  }
+  // 檢查權限是否還有效
+  const perm = await handle.queryPermission({ mode: 'read' });
+  if (perm === 'granted') return handle;
+  if (perm === 'prompt') {
+    if (silent) return null; // 自動同步時不跳視窗
+    const req = await handle.requestPermission({ mode: 'read' });
+    if (req === 'granted') return handle;
+  }
+  return null;
+}
+
+// ----- 掃描資料夾取得所有單日行程檔 -----
+async function _syncScanFolder(handle) {
+  const yearFromFolder = _syncParseYearFromFolder(
+    // handle.name 可能是 "4月"，父層才是 "115年"；我們簡化直接在檔案層掃
+    null
+  );
+  const files = [];
+  for await (const entry of handle.values()) {
+    if (entry.kind !== 'file') continue;
+    if (!/\.xlsx?$/i.test(entry.name)) continue;
+    // 只要單日行程檔（檔名以 2 位月 + 2 位日開頭）
+    if (!/^\d{4}/.test(entry.name)) continue;
+    const meta = _syncParseFilename(entry.name);
+    if (!meta) continue;
+    files.push({ entry, meta });
+  }
+  return files;
+}
+
+// ----- 全量解析 + 建立 diff -----
+async function _syncBuildDiff(scanned) {
+  const allSchedules = getScheduleData();
+  const existingByDate = {};
+  allSchedules.forEach(s => {
+    if (!existingByDate[s.date]) existingByDate[s.date] = [];
+    existingByDate[s.date].push(s);
+  });
+
+  const parsedByDate = {};   // date -> [{ entry, meta, visits }]
+  const unmatchedCases = []; // { idNumber, name, address, doctor }
+  const missingDoctors = new Set();
+
+  for (const f of scanned) {
+    const file = await f.entry.getFile();
+    const visits = await _syncParseExcel(file);
+    // 匹配醫師
+    const doctorMember = (db.members || []).find(m =>
+      m.name === f.meta.doctor && (m.role === 'doctor' || !m.role)
+    );
+    if (!doctorMember) missingDoctors.add(f.meta.doctor);
+
+    const matchedVisits = visits.map(v => {
+      const caseObj = (db.cases || []).find(c =>
+        c.idNumber && c.idNumber.toUpperCase() === v.idNumber
+      );
+      if (!caseObj) {
+        unmatchedCases.push({
+          idNumber: v.idNumber, name: v.name,
+          address: v.address, doctor: f.meta.doctor,
+          date: f.meta.dateStr
+        });
+      }
+      return { ...v, caseObj, doctorMember };
+    });
+
+    if (!parsedByDate[f.meta.dateStr]) parsedByDate[f.meta.dateStr] = [];
+    parsedByDate[f.meta.dateStr].push({ meta: f.meta, visits: matchedVisits, filename: f.entry.name });
+  }
+
+  // 產出最終行程清單（按日期）
+  const result = Object.keys(parsedByDate).sort().map(date => {
+    const fileGroups = parsedByDate[date];
+    const schedules = [];
+    fileGroups.forEach(fg => {
+      fg.visits.forEach(v => {
+        schedules.push({
+          id: 'S' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+          date, time: _syncFormatTime(v.eta, fg.meta.period),
+          caseId: v.caseObj ? v.caseObj.id : null,
+          caseName: v.name,
+          idNumber: v.idNumber,
+          doctorId: v.doctorMember ? v.doctorMember.id : null,
+          doctorName: fg.meta.doctor,
+          duration: v.duration,
+          type: 'home',
+          status: 'pending',
+          address: v.address,
+          _source: 'excel-sync',
+          _sourceFile: fg.filename
+        });
+      });
+    });
+    schedules.sort((a, b) => a.time.localeCompare(b.time));
+    const existing = existingByDate[date] || [];
+    const hasOtherSource = existing.some(s => s._source !== 'excel-sync');
+    return {
+      date,
+      newSchedules: schedules,
+      existing,
+      hasOtherSource,
+      action: existing.length > 0 ? 'overwrite' : 'add'
+    };
+  });
+
+  return { byDate: result, unmatchedCases, missingDoctors: [...missingDoctors] };
+}
+
+// ----- 開始同步（主入口）-----
+async function syncScheduleFromFolder(silent) {
+  const handle = await _syncEnsureFolder(silent);
+  if (!handle) {
+    if (!silent) alert('尚未授權資料夾。請先點「授權資料夾」。');
+    return;
+  }
+
+  try {
+    const scanned = await _syncScanFolder(handle);
+    if (scanned.length === 0) {
+      if (!silent) showToast('資料夾內沒有符合格式的單日行程檔', 'warning');
+      return;
+    }
+
+    const diff = await _syncBuildDiff(scanned);
+    const totalVisits = diff.byDate.reduce((s, d) => s + d.newSchedules.length, 0);
+
+    // 自動同步模式：靜默執行，只在有變動時通知
+    if (silent) {
+      const lastSyncedStr = localStorage.getItem(EXCEL_SYNC.LS_SYNCED_FILES);
+      const lastSynced = lastSyncedStr ? JSON.parse(lastSyncedStr) : {};
+      // 檢查檔案 mtime 是否有變
+      let hasNew = false;
+      for (const f of scanned) {
+        const file = await f.entry.getFile();
+        if (lastSynced[f.entry.name] !== file.lastModified) { hasNew = true; break; }
+      }
+      if (!hasNew) return;
+      _syncApplyDiff(diff, scanned, true);
+      showToast(`🗂 自動同步完成：${totalVisits} 個訪視`, 'success');
+      return;
+    }
+
+    _syncShowDiffModal(diff, scanned);
+  } catch (e) {
+    console.error(e);
+    alert('同步失敗：' + e.message);
+  }
+}
+
+function _syncShowDiffModal(diff, scanned) {
+  window._syncCache = { diff, scanned };
+  const overwriteDates = diff.byDate.filter(d => d.existing.length > 0);
+  const addDates = diff.byDate.filter(d => d.existing.length === 0);
+  const totalVisits = diff.byDate.reduce((s, d) => s + d.newSchedules.length, 0);
+
+  const body = `
+    <div class="sync-diff">
+      <div class="sync-stats">
+        <div class="sync-stat"><div class="sync-stat-num">${scanned.length}</div><div>掃到檔案</div></div>
+        <div class="sync-stat"><div class="sync-stat-num" style="color:#2563eb">${diff.byDate.length}</div><div>影響日期</div></div>
+        <div class="sync-stat"><div class="sync-stat-num" style="color:#16a34a">${totalVisits}</div><div>訪視總數</div></div>
+        <div class="sync-stat"><div class="sync-stat-num" style="color:#f59e0b">${overwriteDates.length}</div><div>日期需覆蓋</div></div>
+        <div class="sync-stat"><div class="sync-stat-num" style="color:#dc2626">${diff.unmatchedCases.length}</div><div>未匹配個案</div></div>
+      </div>
+
+      ${diff.missingDoctors.length > 0 ? `
+        <div class="sync-warn">⚠️ 系統中找不到醫師：${diff.missingDoctors.map(esc).join('、')}（將以姓名儲存但無法自動建立關聯）</div>
+      ` : ''}
+
+      <details open style="margin-top:12px">
+        <summary style="font-weight:600;cursor:pointer">📅 每日行程（${diff.byDate.length} 天）</summary>
+        <div style="max-height:40vh;overflow-y:auto;margin-top:8px">
+          ${diff.byDate.map(d => `
+            <div class="sync-day-card">
+              <div class="sync-day-header">
+                <label style="flex:1;display:flex;gap:8px;align-items:center">
+                  <input type="checkbox" class="sync-day-chk" data-date="${d.date}" checked>
+                  <strong>${d.date}</strong>
+                  <span class="badge ${d.existing.length > 0 ? 'badge-warning' : 'badge-success'}">${d.existing.length > 0 ? `覆蓋（舊 ${d.existing.length} 筆）` : '新增'}</span>
+                  <span style="color:#6b7280">${d.newSchedules.length} 站</span>
+                </label>
+              </div>
+              <div class="sync-day-visits">
+                ${d.newSchedules.map(s => `
+                  <div class="sync-visit">
+                    <span class="sync-time">${s.time}</span>
+                    <span class="sync-name">${esc(s.caseName)}</span>
+                    <span class="sync-doc">👨‍⚕️ ${esc(s.doctorName)}</span>
+                    ${!s.caseId ? '<span class="badge badge-danger" style="font-size:.7rem">新個案</span>' : ''}
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </details>
+
+      ${diff.unmatchedCases.length > 0 ? `
+        <details style="margin-top:12px">
+          <summary style="font-weight:600;cursor:pointer;color:#dc2626">⚠ 系統中未找到的個案（${diff.unmatchedCases.length}）</summary>
+          <div style="max-height:30vh;overflow-y:auto;margin-top:8px">
+            <table class="data-table" style="font-size:.85rem">
+              <thead><tr><th>姓名</th><th>身分證</th><th>地址</th><th>醫師</th><th>日期</th></tr></thead>
+              <tbody>
+                ${diff.unmatchedCases.map(u => `
+                  <tr><td>${esc(u.name)}</td><td>${maskId(u.idNumber)}</td><td>${esc(u.address || '-')}</td><td>${esc(u.doctor)}</td><td>${u.date}</td></tr>
+                `).join('')}
+              </tbody>
+            </table>
+            <p style="font-size:.8rem;color:#6b7280;margin-top:8px">這些個案會以姓名＋身分證記錄，但沒有與系統個案建立關聯。建議先去 LCMS 同步。</p>
+          </div>
+        </details>
+      ` : ''}
+    </div>
+  `;
+  const footer = `
+    <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    <button class="btn btn-primary" onclick="_syncApply()">套用勾選日期</button>
+  `;
+  openModal('📂 行程同步預覽', body, footer);
+  const modal = document.getElementById('modal');
+  if (modal) { modal.style.maxWidth = '900px'; modal.style.width = '90vw'; }
+}
+
+async function _syncApply() {
+  const { diff, scanned } = window._syncCache || {};
+  if (!diff) return;
+  const selectedDates = new Set(
+    [...document.querySelectorAll('.sync-day-chk:checked')].map(c => c.dataset.date)
+  );
+  const filtered = {
+    byDate: diff.byDate.filter(d => selectedDates.has(d.date)),
+    unmatchedCases: diff.unmatchedCases,
+    missingDoctors: diff.missingDoctors
+  };
+  _syncApplyDiff(filtered, scanned, false);
+  closeModal();
+  const modal = document.getElementById('modal');
+  if (modal) { modal.style.maxWidth = ''; modal.style.width = ''; }
+  const total = filtered.byDate.reduce((s, d) => s + d.newSchedules.length, 0);
+  showToast(`✅ 已同步 ${filtered.byDate.length} 天、${total} 個訪視`, 'success');
+  // 跳到訪視行程頁
+  if (typeof switchPage === 'function') switchPage('schedule');
+}
+
+function _syncApplyDiff(diff, scanned, silent) {
+  const all = getScheduleData();
+  const datesSet = new Set(diff.byDate.map(d => d.date));
+
+  // 刪除受影響日期的舊行程（只刪 _source === 'excel-sync' 或整個日期覆蓋）
+  // 策略：整個日期都刪，以 Excel 為權威來源
+  const kept = all.filter(s => !datesSet.has(s.date));
+
+  // 加入新行程
+  const newOnes = [];
+  diff.byDate.forEach(d => newOnes.push(...d.newSchedules));
+  const merged = [...kept, ...newOnes];
+  saveScheduleData(merged);
+
+  // 記錄已同步檔案 mtime（供自動同步檢查）
+  Promise.all(scanned.map(async f => {
+    const file = await f.entry.getFile();
+    return { name: f.entry.name, mtime: file.lastModified };
+  })).then(list => {
+    const map = {};
+    list.forEach(x => { map[x.name] = x.mtime; });
+    localStorage.setItem(EXCEL_SYNC.LS_SYNCED_FILES, JSON.stringify(map));
+    localStorage.setItem(EXCEL_SYNC.LS_LAST_SYNC, new Date().toISOString());
+  });
+}
+
+// ----- 設定視窗 -----
+async function openSyncSettings() {
+  const handle = await _syncIdbGet(EXCEL_SYNC.KEY_FOLDER);
+  const autoOn = localStorage.getItem(EXCEL_SYNC.LS_AUTO) === '1';
+  const lastSync = localStorage.getItem(EXCEL_SYNC.LS_LAST_SYNC);
+  const body = `
+    <div class="form-group">
+      <label class="form-label">已授權資料夾</label>
+      <div style="padding:10px;background:#f8fafc;border-radius:8px;font-family:monospace;font-size:.85rem">
+        ${handle ? `📂 ${esc(handle.name)}` : '（未授權）'}
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-sm btn-primary" onclick="_syncReauth()">${handle ? '🔄 重新選擇資料夾' : '📂 授權資料夾'}</button>
+        ${handle ? '<button class="btn btn-sm btn-outline" onclick="_syncClearAuth()">移除授權</button>' : ''}
+      </div>
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="f-sync-auto" ${autoOn ? 'checked' : ''}>
+        <span>系統開啟時自動掃描並同步（需瀏覽器已有資料夾權限）</span>
+      </label>
+    </div>
+    <div class="form-group">
+      <label class="form-label">上次同步</label>
+      <div style="color:#6b7280;font-size:.85rem">${lastSync ? lastSync.replace('T',' ').slice(0,19) : '尚未同步'}</div>
+    </div>
+    <div style="padding:10px;background:#fef3c7;border-radius:8px;font-size:.8rem;color:#92400e">
+      💡 僅 Chrome / Edge 電腦版支援資料夾授權。
+    </div>
+  `;
+  const footer = `
+    <button class="btn btn-outline" onclick="closeModal()">關閉</button>
+    <button class="btn btn-primary" onclick="_syncSaveSettings()">儲存</button>
+  `;
+  openModal('⚙️ 行程同步設定', body, footer);
+}
+
+async function _syncReauth() {
+  closeModal();
+  await syncScheduleChooseFolder();
+  openSyncSettings();
+}
+
+async function _syncClearAuth() {
+  if (!confirm('確定移除資料夾授權？')) return;
+  await _syncIdbDel(EXCEL_SYNC.KEY_FOLDER);
+  localStorage.removeItem(EXCEL_SYNC.LS_SYNCED_FILES);
+  localStorage.removeItem(EXCEL_SYNC.LS_LAST_SYNC);
+  closeModal();
+  openSyncSettings();
+}
+
+function _syncSaveSettings() {
+  const autoOn = document.getElementById('f-sync-auto').checked;
+  localStorage.setItem(EXCEL_SYNC.LS_AUTO, autoOn ? '1' : '0');
+  closeModal();
+  showToast('已儲存', 'success');
+}
+
+// ----- 登入後觸發自動同步 -----
+async function maybeAutoSyncSchedule() {
+  if (localStorage.getItem(EXCEL_SYNC.LS_AUTO) !== '1') return;
+  // 稍候一下讓主畫面先 render
+  setTimeout(() => {
+    syncScheduleFromFolder(true).catch(e => console.warn('自動同步失敗:', e));
+  }, 3000);
+}
+
 function computeKPI(doctorFilter) {
   const active = getActiveCases(db).filter(c => {
     if (!doctorFilter) return true;

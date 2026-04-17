@@ -145,6 +145,7 @@ function onLoginSuccess(loginResponse) {
   loadCloudData().then(() => {
     initNav(); initFilters(); renderDashboard(); updateAlertBadge();
     document.getElementById('today-date').textContent = formatDateCN(new Date());
+    if (typeof maybeAutoSyncSchedule === 'function') maybeAutoSyncSchedule();
   });
 }
 

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>居家失能個案家庭醫師照護方案 — 個案追蹤管理系統</title>
-<link rel="stylesheet" href="styles.css?v=20260417">
+<link rel="stylesheet" href="styles.css?v=20260417b">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
@@ -790,6 +790,8 @@
         </select>
         <button class="btn btn-xs btn-primary" onclick="openScheduleAdd()">＋ 新增訪視</button>
         <button class="btn btn-xs btn-outline" onclick="scheduleAutoArrange()">🤖 自動排程</button>
+        <button class="btn btn-xs btn-outline" onclick="syncScheduleFromFolder(false)" title="從網路資料夾同步 Excel 行程">📂 同步行程</button>
+        <button class="btn btn-xs btn-outline" onclick="openSyncSettings()" title="同步設定">⚙️</button>
         <button class="btn btn-xs btn-success" onclick="scheduleRouteplan()">🗺️ 路線規劃</button>
         <button class="btn btn-xs btn-outline" onclick="scheduleExport()">📤 匯出</button>
       </div>
@@ -848,6 +850,7 @@
       </div>
       <div class="toolbar-right">
         <button class="btn btn-sm btn-outline" onclick="_routePageOptimize()">🔄 最佳化順序</button>
+        <button class="btn btn-sm btn-outline" onclick="syncScheduleFromFolder(false)" title="從網路資料夾同步 Excel 行程">📂 同步</button>
         <button class="btn btn-sm btn-outline" onclick="switchPage('schedule')">📅 回行程表</button>
       </div>
     </div>
@@ -934,9 +937,9 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-<script src="firebase-config.js?v=20260417"></script>
+<script src="firebase-config.js?v=20260417b"></script>
 <script src="cases-data.js"></script>
-<script src="data.js?v=20260417"></script>
-<script src="app.js?v=20260417"></script>
+<script src="data.js?v=20260417b"></script>
+<script src="app.js?v=20260417b"></script>
 </body>
 </html>

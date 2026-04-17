@@ -984,3 +984,45 @@ textarea.form-input { height: auto; padding: .5rem .75rem; resize: vertical; }
   .gps-replay-bar { flex-wrap: wrap; }
   .gps-replay-bar input[type=range] { flex-basis: 100%; order: 5; }
 }
+
+/* ===== 行程同步（Excel）===== */
+.sync-diff { max-height: 72vh; overflow-y: auto; }
+.sync-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px; margin-bottom: 12px;
+}
+.sync-stat {
+  background: #f8fafc; border: 1px solid #e2e8f0;
+  border-radius: 8px; padding: 10px; text-align: center;
+}
+.sync-stat-num { font-size: 1.4rem; font-weight: 700; color: #334155; }
+.sync-stat > div:last-child { font-size: .75rem; color: #64748b; }
+
+.sync-warn {
+  background: #fef3c7; color: #92400e;
+  padding: 10px; border-radius: 8px; font-size: .85rem;
+}
+.sync-day-card {
+  border: 1px solid #e2e8f0; border-radius: 8px;
+  margin-bottom: 8px; overflow: hidden;
+}
+.sync-day-header {
+  background: #f1f5f9; padding: 10px;
+  display: flex; align-items: center;
+}
+.sync-day-header input[type=checkbox] { cursor: pointer; }
+.sync-day-visits {
+  padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.sync-visit {
+  display: flex; gap: 10px; padding: 4px 0; font-size: .85rem;
+  border-bottom: 1px dashed #f1f5f9; align-items: center;
+}
+.sync-visit:last-child { border-bottom: none; }
+.sync-time {
+  font-family: monospace; color: #dc2626;
+  font-weight: 700; min-width: 48px;
+}
+.sync-name { font-weight: 600; flex: 1; }
+.sync-doc { color: #6b7280; font-size: .8rem; }
