@@ -154,7 +154,7 @@ function initNav() {
 const pageTitles = {
   dashboard: '主控儀表板', cases: '個案管理', members: '成員管理',
   services: '服務紀錄', opinion: '醫師意見書', billing: '費用申報',
-  schedule: '訪視行程', route: '訪視路線', casemap: '個案地圖', alerts: '警示與待辦',
+  schedule: '訪視行程', route: '訪視路線', casemap: '個案地圖', gps: '即時定位看板', alerts: '警示與待辦',
   reports: '報表匯出', users: '使用者管理'
 };
 
@@ -178,10 +178,15 @@ function switchPage(page) {
     document.body.classList.remove('sidebar-open');
   }
 
+  // 離開 GPS 看板時停止輪詢
+  if (page !== 'gps' && typeof stopGpsDashboard === 'function') stopGpsDashboard();
+
   const renderers = {
     dashboard: renderDashboard, cases: renderCases, members: renderMembers,
     services: renderServices, opinion: renderOpinions, billing: renderBilling,
-    schedule: renderSchedule, route: renderRoutePage, casemap: renderCaseMap, alerts: renderAlerts, users: renderUserManagement
+    schedule: renderSchedule, route: renderRoutePage, casemap: renderCaseMap,
+    gps: renderGpsDashboard,
+    alerts: renderAlerts, users: renderUserManagement
   };
   if (renderers[page]) renderers[page]();
 }
@@ -3777,12 +3782,18 @@ function _renderRoutePageContent(visitCases, allVisits, legData, dateStr, routeI
       </div>`;
     }
 
+    // GPS 狀態徽章
+    const gpsStatus = vc.visit.arrivedAt
+      ? (vc.visit.departedAt ? `<span class="route-page-stop-badge gps-done">✓ 已完成</span>`
+                              : `<span class="route-page-stop-badge gps-active">📍 服務中</span>`)
+      : '';
+
     stopsHtml += `
-      <div class="route-page-stop">
+      <div class="route-page-stop ${vc.visit.departedAt ? 'visit-done' : (vc.visit.arrivedAt ? 'visit-active' : '')}">
         <div class="route-page-stop-num" style="background:${color}">${i + 1}</div>
         <div class="route-page-stop-body">
           <div class="route-page-stop-header">
-            <span class="route-page-stop-name">${esc(vc.name)}</span>
+            <span class="route-page-stop-name">${esc(vc.name)} ${gpsStatus}</span>
             <span class="route-page-stop-time">🕐 ${etaArrival}</span>
           </div>
           <div class="route-page-stop-meta">
@@ -3791,7 +3802,9 @@ function _renderRoutePageContent(visitCases, allVisits, legData, dateStr, routeI
           <div class="route-page-stop-meta">
             👨‍⚕️ ${doc ? esc(doc.name) : '-'} ・ ${vc.visit.duration || 30}分鐘 ・ 離開 ${etaDeparture}
           </div>
+          <div class="route-page-stop-gps" id="gps-dist-${vc.visit.id}">${gpsState.watching ? '📡 計算距離中...' : ''}</div>
           ${vc.approx ? '<div class="route-page-stop-warn">⚠ 約略位置</div>' : ''}
+          ${vc.visit.arrivedAt ? `<div class="route-page-stop-meta" style="color:#16a34a;font-size:.75rem">⏱ 抵達 ${vc.visit.arrivedAt.slice(11,16)}${vc.visit.departedAt ? ` ・ 離開 ${vc.visit.departedAt.slice(11,16)} ・ 實際 ${vc.visit.actualDuration || '?'} 分` : ''}</div>` : ''}
         </div>
       </div>`;
   });
@@ -3802,10 +3815,34 @@ function _renderRoutePageContent(visitCases, allVisits, legData, dateStr, routeI
     warnHtml = `<div class="route-page-warn">⚠️ 無法定位：${noCoords.map(vc => vc.name).join('、')}，請至個案地圖進行地址定位</div>`;
   }
 
+  // GPS 追蹤控制列（僅今天的路線可用）
+  const isToday = dateStr === fmt(new Date());
+  let gpsBarHtml = '';
+  if (isToday) {
+    if (gpsState.watching) {
+      gpsBarHtml = `
+        <div class="gps-control-bar gps-active-bar">
+          <div id="gps-live-bar" class="gps-live-info">
+            <span class="gps-pulse"></span>
+            <strong>追蹤中</strong>
+            <span>⏱ 0:00</span><span>📍 0 點</span><span>🛣 0.00 km</span>
+          </div>
+          <button class="btn btn-sm btn-outline" onclick="gpsStopTracking()" style="white-space:nowrap">⏸ 停止追蹤</button>
+        </div>`;
+    } else {
+      gpsBarHtml = `
+        <div class="gps-control-bar">
+          <div style="flex:1;font-size:.85rem;color:var(--gray-500)">📡 啟用 GPS 後將自動標記抵達/離開</div>
+          <button class="btn btn-sm btn-primary" onclick="gpsStartTracking()" style="white-space:nowrap">▶ 開始追蹤</button>
+        </div>`;
+    }
+  }
+
   container.innerHTML = `
     <div class="route-page-header">
       <div class="route-page-date">📅 ${dateLabel}</div>
       ${statsHtml}
+      ${gpsBarHtml}
     </div>
     <div class="route-page-stops">
       ${stopsHtml}
@@ -3851,6 +3888,609 @@ async function _routePageOptimize() {
   _routePageData.visitCases = ordered;
   showToast('已依最短路徑重新排序', 'success');
   renderRoutePage();
+}
+
+// ==========================================
+//  📡 即時 GPS 追蹤系統
+// ==========================================
+const GPS_CONFIG = {
+  WATCH_OPTIONS: { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
+  UPLOAD_BATCH_INTERVAL: 30 * 1000,   // 每 30 秒上傳一批
+  POINT_MIN_DISTANCE_M: 10,            // 與上一個點 < 10m 不收
+  POINT_MIN_INTERVAL_MS: 5 * 1000,    // 與上一個點 < 5 秒不收（除非距離大）
+  CHECKIN_RADIUS_M: 100,               // 進入此距離自動標抵達
+  CHECKIN_DWELL_MS: 30 * 1000,        // 需停留 30 秒才算抵達（避免路過誤判）
+  CHECKOUT_RADIUS_M: 150,              // 超出此距離 60 秒才算離開
+  CHECKOUT_DWELL_MS: 60 * 1000,
+  DASHBOARD_POLL_MS: 15 * 1000         // 看板每 15 秒刷新
+};
+
+const gpsState = {
+  watching: false,
+  watchId: null,
+  pointBuffer: [],               // 待上傳
+  uploadTimer: null,
+  lastPoint: null,                // {lat, lng, ts}
+  lastEvent: {},                  // { caseId: { state:'inside'|'outside', enteredAt, leftAt, lastDistance, arrivedAt, departedAt } }
+  startedAt: null,
+  totalDistance: 0,
+  pointCount: 0
+};
+
+function _haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function _gpsEnsureToday() {
+  if (!_routePageData) return false;
+  const today = fmt(new Date());
+  if (_routePageData.dateStr !== today) {
+    showToast('GPS 追蹤僅可在「今天」的路線啟用', 'warning');
+    return false;
+  }
+  return true;
+}
+
+async function gpsStartTracking() {
+  if (gpsState.watching) return;
+  if (!('geolocation' in navigator)) {
+    alert('此裝置不支援定位功能');
+    return;
+  }
+  if (!_gpsEnsureToday()) return;
+
+  // 第一次徵詢同意
+  if (!localStorage.getItem('gps_consent')) {
+    if (!confirm('啟用即時 GPS 追蹤後：\n\n• 您的位置將上傳到團隊看板\n• 靠近個案地址時會自動標記抵達/離開\n• 軌跡會儲存以便事後檢視\n\n確認啟用？')) return;
+    localStorage.setItem('gps_consent', '1');
+  }
+
+  try {
+    await apiCall('POST', '/api/gps/start');
+  } catch (e) {
+    alert('無法啟動追蹤：' + e.message);
+    return;
+  }
+
+  gpsState.watching = true;
+  gpsState.startedAt = Date.now();
+  gpsState.pointBuffer = [];
+  gpsState.totalDistance = 0;
+  gpsState.pointCount = 0;
+  gpsState.lastPoint = null;
+  gpsState.lastEvent = {};
+
+  gpsState.watchId = navigator.geolocation.watchPosition(
+    _gpsOnPosition,
+    _gpsOnError,
+    GPS_CONFIG.WATCH_OPTIONS
+  );
+
+  // 30 秒批次上傳
+  gpsState.uploadTimer = setInterval(_gpsFlushBuffer, GPS_CONFIG.UPLOAD_BATCH_INTERVAL);
+  // 頁面切換時繼續運作（瀏覽器背景策略 OS 控管）
+  window.addEventListener('beforeunload', _gpsBeforeUnload);
+
+  showToast('📡 GPS 追蹤已啟動', 'success');
+  renderRoutePage(); // 重畫頭尾按鈕
+}
+
+async function gpsStopTracking(silent) {
+  if (!gpsState.watching) return;
+  if (gpsState.watchId !== null) navigator.geolocation.clearWatch(gpsState.watchId);
+  clearInterval(gpsState.uploadTimer);
+  await _gpsFlushBuffer();
+  try { await apiCall('POST', '/api/gps/stop'); } catch (e) { /* ignore */ }
+
+  gpsState.watching = false;
+  gpsState.watchId = null;
+  gpsState.uploadTimer = null;
+  window.removeEventListener('beforeunload', _gpsBeforeUnload);
+
+  if (!silent) {
+    showToast('GPS 追蹤已停止', 'info');
+    renderRoutePage();
+  }
+}
+
+function _gpsBeforeUnload() {
+  // 嘗試最後一次同步上傳剩餘點
+  if (gpsState.pointBuffer.length > 0 && navigator.sendBeacon && authToken) {
+    const blob = new Blob([JSON.stringify({ points: gpsState.pointBuffer })], { type: 'application/json' });
+    // sendBeacon 不支援 header，所以走 fetch keepalive 較通用
+    fetch('/api/gps/points', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+      body: JSON.stringify({ points: gpsState.pointBuffer }),
+      keepalive: true
+    }).catch(() => {});
+  }
+}
+
+function _gpsOnPosition(pos) {
+  const { latitude: lat, longitude: lng, accuracy, speed } = pos.coords;
+  const ts = Date.now();
+  const point = { lat, lng, ts, accuracy: accuracy || 0, speed: speed || 0 };
+
+  // 過濾：太近 / 太頻繁
+  if (gpsState.lastPoint) {
+    const dist = _haversineM(gpsState.lastPoint.lat, gpsState.lastPoint.lng, lat, lng);
+    const dt = ts - gpsState.lastPoint.ts;
+    if (dist < GPS_CONFIG.POINT_MIN_DISTANCE_M && dt < GPS_CONFIG.POINT_MIN_INTERVAL_MS * 6) {
+      // 距離小且時間短：跳過。但若停留很久仍要記錄一次（每 30 秒一次心跳）
+      return;
+    }
+    gpsState.totalDistance += dist;
+  }
+
+  gpsState.lastPoint = point;
+  gpsState.pointBuffer.push(point);
+  gpsState.pointCount++;
+  _gpsCheckAutoEvents(lat, lng, ts);
+  _gpsUpdateLiveUI(lat, lng);
+}
+
+function _gpsOnError(err) {
+  console.warn('GPS error:', err.message);
+  if (err.code === err.PERMISSION_DENIED) {
+    alert('未授權位置權限，無法追蹤。請至瀏覽器設定開啟。');
+    gpsStopTracking(true);
+  }
+}
+
+async function _gpsFlushBuffer() {
+  if (gpsState.pointBuffer.length === 0) return;
+  const batch = gpsState.pointBuffer.splice(0);
+  try {
+    await apiCall('POST', '/api/gps/points', { points: batch });
+  } catch (e) {
+    // 失敗放回 buffer 下次再試（最多保留最後 200 點避免爆記憶體）
+    gpsState.pointBuffer = batch.concat(gpsState.pointBuffer).slice(-200);
+    console.warn('GPS 上傳失敗，下次重試:', e.message);
+  }
+}
+
+function _gpsCheckAutoEvents(lat, lng, ts) {
+  if (!_routePageData) return;
+  const visits = _routePageData.allVisits || [];
+  visits.forEach(vc => {
+    if (!vc.lat || !vc.lng) return;
+    const sched = vc.visit;
+    const caseId = sched.caseId;
+    const dist = _haversineM(lat, lng, vc.lat, vc.lng);
+    const ev = gpsState.lastEvent[caseId] || (gpsState.lastEvent[caseId] = { state: 'outside' });
+
+    // === 抵達偵測 ===
+    if (!ev.arrivedAt && dist <= GPS_CONFIG.CHECKIN_RADIUS_M) {
+      if (!ev.enteredAt) ev.enteredAt = ts;
+      else if (ts - ev.enteredAt >= GPS_CONFIG.CHECKIN_DWELL_MS) {
+        ev.arrivedAt = new Date(ts).toISOString();
+        ev.state = 'inside';
+        // 寫入 schedule + 通知後端 + UI 提示
+        _gpsMarkVisitArrived(sched, vc.name, lat, lng);
+        showToast(`✅ 已抵達 ${vc.name}`, 'success');
+        _gpsBeep();
+      }
+    } else if (!ev.arrivedAt && dist > GPS_CONFIG.CHECKIN_RADIUS_M) {
+      ev.enteredAt = null;
+    }
+
+    // === 離開偵測（已抵達後）===
+    if (ev.arrivedAt && !ev.departedAt) {
+      if (dist > GPS_CONFIG.CHECKOUT_RADIUS_M) {
+        if (!ev.leftAt) ev.leftAt = ts;
+        else if (ts - ev.leftAt >= GPS_CONFIG.CHECKOUT_DWELL_MS) {
+          ev.departedAt = new Date(ts).toISOString();
+          ev.state = 'outside';
+          _gpsMarkVisitDeparted(sched, vc.name, lat, lng);
+          showToast(`👋 已離開 ${vc.name}（訪視完成）`, 'success');
+        }
+      } else {
+        ev.leftAt = null;
+      }
+    }
+    ev.lastDistance = dist;
+  });
+}
+
+async function _gpsMarkVisitArrived(sched, caseName, lat, lng) {
+  const all = getScheduleData();
+  const idx = all.findIndex(s => s.id === sched.id);
+  if (idx >= 0) {
+    all[idx].arrivedAt = new Date().toISOString();
+    all[idx].arrivedLat = lat;
+    all[idx].arrivedLng = lng;
+    if (all[idx].status === 'pending' || !all[idx].status) all[idx].status = 'in-progress';
+    saveScheduleData(all);
+  }
+  apiCall('POST', '/api/gps/event', {
+    caseId: sched.caseId, caseName, eventType: 'arrived',
+    lat, lng, scheduleId: sched.id
+  }).catch(() => {});
+  // 重畫卡片
+  if (typeof renderRoutePage === 'function' && document.getElementById('page-route')?.classList.contains('active')) {
+    renderRoutePage();
+  }
+}
+
+async function _gpsMarkVisitDeparted(sched, caseName, lat, lng) {
+  const all = getScheduleData();
+  const idx = all.findIndex(s => s.id === sched.id);
+  if (idx >= 0) {
+    all[idx].departedAt = new Date().toISOString();
+    all[idx].status = 'completed';
+    // 計算實際時長
+    if (all[idx].arrivedAt) {
+      const mins = Math.round((new Date(all[idx].departedAt) - new Date(all[idx].arrivedAt)) / 60000);
+      all[idx].actualDuration = mins;
+    }
+    saveScheduleData(all);
+  }
+  apiCall('POST', '/api/gps/event', {
+    caseId: sched.caseId, caseName, eventType: 'departed',
+    lat, lng, scheduleId: sched.id
+  }).catch(() => {});
+  if (typeof renderRoutePage === 'function' && document.getElementById('page-route')?.classList.contains('active')) {
+    renderRoutePage();
+  }
+}
+
+function _gpsUpdateLiveUI(lat, lng) {
+  // 更新 header 的即時狀態列
+  const el = document.getElementById('gps-live-bar');
+  if (!el) return;
+  const elapsed = Math.round((Date.now() - gpsState.startedAt) / 1000);
+  const mm = Math.floor(elapsed / 60), ss = elapsed % 60;
+  const km = (gpsState.totalDistance / 1000).toFixed(2);
+  el.innerHTML = `
+    <span class="gps-pulse"></span>
+    <strong>追蹤中</strong>
+    <span>⏱ ${mm}:${String(ss).padStart(2,'0')}</span>
+    <span>📍 ${gpsState.pointCount} 點</span>
+    <span>🛣 ${km} km</span>
+  `;
+  // 算出每個 visit 的最新距離並更新卡片
+  const visits = _routePageData?.allVisits || [];
+  visits.forEach(vc => {
+    if (!vc.lat || !vc.lng) return;
+    const dist = _haversineM(lat, lng, vc.lat, vc.lng);
+    const distEl = document.getElementById(`gps-dist-${vc.visit.id}`);
+    if (distEl) {
+      const ev = gpsState.lastEvent[vc.visit.caseId];
+      let txt;
+      if (ev?.departedAt) txt = `<span style="color:var(--success,#16a34a)">✓ 已完成</span>`;
+      else if (ev?.arrivedAt) txt = `<span style="color:var(--success,#16a34a)">📍 服務中（距離 ${dist < 1000 ? Math.round(dist)+'m' : (dist/1000).toFixed(1)+'km'}）</span>`;
+      else txt = `📡 距離 ${dist < 1000 ? Math.round(dist)+'m' : (dist/1000).toFixed(1)+'km'}`;
+      distEl.innerHTML = txt;
+    }
+  });
+}
+
+function _gpsBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = 880;
+    gain.gain.value = 0.1;
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.15);
+  } catch (e) {}
+}
+
+// ==========================================
+//  📡 即時定位看板（管理員端）
+// ==========================================
+let _gpsDashboard = { map: null, markers: {}, pollTimer: null, members: [], date: null };
+
+async function renderGpsDashboard() {
+  const container = document.getElementById('page-gps');
+  if (!container) return;
+  if (currentUser && currentUser.role !== 'admin') {
+    container.innerHTML = '<p style="padding:2rem;text-align:center;color:var(--gray-500)">需要管理員權限</p>';
+    return;
+  }
+  const today = fmt(new Date());
+  if (!_gpsDashboard.date) _gpsDashboard.date = today;
+
+  container.innerHTML = `
+    <div class="page-toolbar">
+      <div class="toolbar-left" style="gap:8px;">
+        <label style="font-weight:600;font-size:.9rem;">📅 日期：</label>
+        <input type="date" id="gps-dash-date" class="form-input" value="${_gpsDashboard.date}" style="width:auto;" onchange="_gpsDashChangeDate(this.value)">
+        <button class="btn btn-sm btn-primary" onclick="_gpsDashRefresh()">🔄 重新整理</button>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-sm btn-outline" onclick="_gpsDashOpenReplay()">▶️ 軌跡回放</button>
+      </div>
+    </div>
+    <div id="gps-dash-map" style="width:100%;height:55vh;border-radius:12px;border:1px solid #e0e0e0;margin-top:8px;"></div>
+    <div id="gps-dash-list" style="margin-top:12px;"></div>
+  `;
+
+  // 初始化地圖（用 Leaflet）
+  if (_gpsDashboard.map) { _gpsDashboard.map.remove(); _gpsDashboard.map = null; _gpsDashboard.markers = {}; }
+  const mapEl = document.getElementById('gps-dash-map');
+  _gpsDashboard.map = L.map(mapEl).setView([24.99, 121.30], 12); // 桃園預設
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap'
+  }).addTo(_gpsDashboard.map);
+
+  await _gpsDashFetchAndRender();
+  // 啟動輪詢
+  if (_gpsDashboard.pollTimer) clearInterval(_gpsDashboard.pollTimer);
+  _gpsDashboard.pollTimer = setInterval(_gpsDashFetchAndRender, GPS_CONFIG.DASHBOARD_POLL_MS);
+}
+
+function _gpsDashChangeDate(d) {
+  _gpsDashboard.date = d;
+  _gpsDashFetchAndRender();
+}
+
+async function _gpsDashRefresh() {
+  await _gpsDashFetchAndRender();
+  showToast('已更新', 'info');
+}
+
+async function _gpsDashFetchAndRender() {
+  try {
+    const data = await apiCall('GET', `/api/gps/today?date=${encodeURIComponent(_gpsDashboard.date)}`);
+    _gpsDashboard.members = data.members || [];
+    _gpsDashUpdateMap();
+    _gpsDashUpdateList();
+  } catch (e) {
+    console.error('GPS 看板讀取失敗:', e);
+  }
+}
+
+const GPS_MARKER_COLORS = ['#dc2626', '#2563eb', '#16a34a', '#d97706', '#9333ea', '#0891b2', '#db2777'];
+
+function _gpsDashUpdateMap() {
+  if (!_gpsDashboard.map) return;
+  const liveMembers = _gpsDashboard.members.filter(m => m.last_lat != null && m.last_lng != null);
+  const seenIds = new Set();
+  liveMembers.forEach((m, i) => {
+    seenIds.add(m.user_id);
+    const color = GPS_MARKER_COLORS[i % GPS_MARKER_COLORS.length];
+    const popupHtml = `
+      <div style="min-width:160px">
+        <div style="font-weight:700;font-size:1rem">${esc(m.user_name || m.user_id)}</div>
+        <div style="color:#666;font-size:.8rem">最後更新：${_gpsFormatRelTime(m.last_update)}</div>
+        <div style="font-size:.8rem">📍 ${m.point_count} 點 ・ ✅ ${m.event_count} 訪視事件</div>
+        <div style="margin-top:6px"><span class="badge ${m.active ? 'badge-success' : 'badge-secondary'}">${m.active ? '🟢 追蹤中' : '⚫ 離線'}</span></div>
+      </div>
+    `;
+    if (_gpsDashboard.markers[m.user_id]) {
+      _gpsDashboard.markers[m.user_id].setLatLng([m.last_lat, m.last_lng]).setPopupContent(popupHtml);
+    } else {
+      const icon = L.divIcon({
+        className: 'gps-marker',
+        html: `<div class="gps-marker-pin" style="background:${color}">${esc((m.user_name || '?').slice(0,1))}</div>`,
+        iconSize: [32, 32], iconAnchor: [16, 16]
+      });
+      _gpsDashboard.markers[m.user_id] = L.marker([m.last_lat, m.last_lng], { icon }).addTo(_gpsDashboard.map).bindPopup(popupHtml);
+    }
+  });
+  // 移除已不存在的 marker
+  Object.keys(_gpsDashboard.markers).forEach(id => {
+    if (!seenIds.has(id)) {
+      _gpsDashboard.map.removeLayer(_gpsDashboard.markers[id]);
+      delete _gpsDashboard.markers[id];
+    }
+  });
+  // 自動框住所有 marker
+  if (liveMembers.length > 0) {
+    const bounds = L.latLngBounds(liveMembers.map(m => [m.last_lat, m.last_lng]));
+    if (liveMembers.length > 1) _gpsDashboard.map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    else _gpsDashboard.map.setView([liveMembers[0].last_lat, liveMembers[0].last_lng], 14);
+  }
+}
+
+function _gpsDashUpdateList() {
+  const el = document.getElementById('gps-dash-list');
+  if (!el) return;
+  if (_gpsDashboard.members.length === 0) {
+    el.innerHTML = '<div class="card" style="text-align:center;padding:2rem;color:var(--gray-500)">📭 該日無 GPS 追蹤紀錄</div>';
+    return;
+  }
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h4>📋 成員清單（${_gpsDashboard.members.length}）</h4></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;padding:8px;">
+        ${_gpsDashboard.members.map((m, i) => {
+          const color = GPS_MARKER_COLORS[i % GPS_MARKER_COLORS.length];
+          return `
+            <div class="gps-member-card" onclick="_gpsDashFocus('${esc(m.user_id)}')">
+              <div class="gps-member-dot" style="background:${color}">${esc((m.user_name || '?').slice(0,1))}</div>
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:600;font-size:.95rem">${esc(m.user_name || m.user_id)}</div>
+                <div style="font-size:.75rem;color:#666;display:flex;gap:8px;flex-wrap:wrap">
+                  <span class="badge ${m.active ? 'badge-success' : 'badge-secondary'}" style="font-size:.7rem">${m.active ? '🟢 追蹤中' : '⚫ 離線'}</span>
+                  <span>📍 ${m.point_count}</span>
+                  <span>✅ ${m.event_count}</span>
+                </div>
+                <div style="font-size:.7rem;color:#999">${_gpsFormatRelTime(m.last_update)}</div>
+              </div>
+              <button class="btn btn-xs btn-outline" onclick="event.stopPropagation();_gpsDashOpenReplayFor('${esc(m.user_id)}','${esc(m.user_name || '')}')">▶</button>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function _gpsDashFocus(userId) {
+  const m = _gpsDashboard.members.find(x => x.user_id === userId);
+  if (!m || m.last_lat == null) return;
+  _gpsDashboard.map.setView([m.last_lat, m.last_lng], 16);
+  if (_gpsDashboard.markers[userId]) _gpsDashboard.markers[userId].openPopup();
+}
+
+function _gpsFormatRelTime(iso) {
+  if (!iso) return '無紀錄';
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60) return `${diff} 秒前`;
+  if (diff < 3600) return `${Math.floor(diff/60)} 分鐘前`;
+  if (diff < 86400) return `${Math.floor(diff/3600)} 小時前`;
+  return iso.slice(0, 16).replace('T', ' ');
+}
+
+function stopGpsDashboard() {
+  if (_gpsDashboard.pollTimer) { clearInterval(_gpsDashboard.pollTimer); _gpsDashboard.pollTimer = null; }
+  if (_gpsDashboard.map) { _gpsDashboard.map.remove(); _gpsDashboard.map = null; _gpsDashboard.markers = {}; }
+}
+
+// ==========================================
+//  🎬 軌跡回放
+// ==========================================
+let _gpsReplay = { map: null, layer: null, playTimer: null, points: [], idx: 0, marker: null };
+
+function _gpsDashOpenReplay() {
+  // 顯示成員選單
+  const opts = _gpsDashboard.members.map(m =>
+    `<option value="${esc(m.user_id)}">${esc(m.user_name || m.user_id)}（${m.point_count} 點）</option>`
+  ).join('');
+  if (!opts) { alert('該日無紀錄可回放'); return; }
+  openModal('🎬 軌跡回放', `
+    <div class="form-group">
+      <label class="form-label">日期</label>
+      <input type="date" class="form-input" id="gps-replay-date" value="${_gpsDashboard.date}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">成員</label>
+      <select class="form-input" id="gps-replay-user">${opts}</select>
+    </div>
+  `, `
+    <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    <button class="btn btn-primary" onclick="_gpsReplayLoad()">載入並播放</button>
+  `);
+}
+
+function _gpsDashOpenReplayFor(userId, userName) {
+  openModal('🎬 軌跡回放 - ' + userName, `
+    <div class="form-group">
+      <label class="form-label">日期</label>
+      <input type="date" class="form-input" id="gps-replay-date" value="${_gpsDashboard.date}">
+    </div>
+    <input type="hidden" id="gps-replay-user" value="${esc(userId)}">
+  `, `
+    <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    <button class="btn btn-primary" onclick="_gpsReplayLoad()">載入並播放</button>
+  `);
+}
+
+async function _gpsReplayLoad() {
+  const date = document.getElementById('gps-replay-date').value;
+  const userId = document.getElementById('gps-replay-user').value;
+  if (!date || !userId) { alert('請選日期與成員'); return; }
+  try {
+    const data = await apiCall('GET', `/api/gps/history?date=${encodeURIComponent(date)}&userId=${encodeURIComponent(userId)}`);
+    if (!data.found || !data.points || data.points.length === 0) {
+      alert('該日無軌跡資料');
+      return;
+    }
+    closeModal();
+    _gpsRenderReplay(data);
+  } catch (e) {
+    alert('載入失敗：' + e.message);
+  }
+}
+
+function _gpsRenderReplay(data) {
+  // 清掉地圖上的舊 layer
+  if (_gpsReplay.layer) _gpsDashboard.map.removeLayer(_gpsReplay.layer);
+  if (_gpsReplay.marker) _gpsDashboard.map.removeLayer(_gpsReplay.marker);
+  if (_gpsReplay.playTimer) clearInterval(_gpsReplay.playTimer);
+
+  const pts = data.points;
+  _gpsReplay.points = pts;
+  _gpsReplay.idx = 0;
+  const latlngs = pts.map(p => [p.lat, p.lng]);
+  _gpsReplay.layer = L.polyline(latlngs, { color: '#dc2626', weight: 4, opacity: 0.7 }).addTo(_gpsDashboard.map);
+  _gpsDashboard.map.fitBounds(_gpsReplay.layer.getBounds(), { padding: [40, 40] });
+
+  // 動態標記
+  const playIcon = L.divIcon({
+    className: 'gps-marker',
+    html: '<div class="gps-marker-pin" style="background:#dc2626">▶</div>',
+    iconSize: [32, 32], iconAnchor: [16, 16]
+  });
+  _gpsReplay.marker = L.marker(latlngs[0], { icon: playIcon }).addTo(_gpsDashboard.map);
+
+  // 加入訪視事件圖標
+  (data.visit_events || []).forEach(ev => {
+    if (ev.lat == null || ev.lng == null) return;
+    const isArr = ev.eventType === 'arrived';
+    const evIcon = L.divIcon({
+      className: 'gps-event-marker',
+      html: `<div style="background:${isArr ? '#16a34a' : '#0891b2'};color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:14px;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,.3)">${isArr ? '🏠' : '🚶'}</div>`,
+      iconSize: [24, 24], iconAnchor: [12, 12]
+    });
+    L.marker([ev.lat, ev.lng], { icon: evIcon }).addTo(_gpsDashboard.map)
+      .bindPopup(`<strong>${isArr ? '抵達' : '離開'}：${esc(ev.caseName || ev.caseId)}</strong><br>${ev.timestamp.slice(11,19)}`);
+  });
+
+  // 顯示控制條
+  let barEl = document.getElementById('gps-replay-bar');
+  if (!barEl) {
+    barEl = document.createElement('div');
+    barEl.id = 'gps-replay-bar';
+    barEl.className = 'gps-replay-bar';
+    document.getElementById('page-gps').appendChild(barEl);
+  }
+  barEl.innerHTML = `
+    <button class="btn btn-sm btn-primary" onclick="_gpsReplayPlay()">▶ 播放</button>
+    <button class="btn btn-sm btn-outline" onclick="_gpsReplayPause()">⏸</button>
+    <button class="btn btn-sm btn-outline" onclick="_gpsReplayClose()">✕ 關閉</button>
+    <input type="range" id="gps-replay-slider" min="0" max="${pts.length - 1}" value="0"
+      oninput="_gpsReplaySeek(this.value)" style="flex:1;">
+    <span id="gps-replay-time">${pts[0].ts ? new Date(pts[0].ts).toTimeString().slice(0,8) : ''}</span>
+  `;
+  barEl.style.display = 'flex';
+}
+
+function _gpsReplayPlay() {
+  if (_gpsReplay.playTimer) clearInterval(_gpsReplay.playTimer);
+  _gpsReplay.playTimer = setInterval(() => {
+    _gpsReplay.idx++;
+    if (_gpsReplay.idx >= _gpsReplay.points.length) {
+      _gpsReplayPause();
+      _gpsReplay.idx = _gpsReplay.points.length - 1;
+    }
+    _gpsReplaySeek(_gpsReplay.idx);
+  }, 100); // 100ms = 一個點，比實時快
+}
+
+function _gpsReplayPause() {
+  if (_gpsReplay.playTimer) { clearInterval(_gpsReplay.playTimer); _gpsReplay.playTimer = null; }
+}
+
+function _gpsReplaySeek(idx) {
+  idx = parseInt(idx);
+  _gpsReplay.idx = idx;
+  const p = _gpsReplay.points[idx];
+  if (!p || !_gpsReplay.marker) return;
+  _gpsReplay.marker.setLatLng([p.lat, p.lng]);
+  const slider = document.getElementById('gps-replay-slider');
+  if (slider) slider.value = idx;
+  const tEl = document.getElementById('gps-replay-time');
+  if (tEl && p.ts) tEl.textContent = new Date(p.ts).toTimeString().slice(0, 8);
+}
+
+function _gpsReplayClose() {
+  _gpsReplayPause();
+  if (_gpsReplay.layer) { _gpsDashboard.map.removeLayer(_gpsReplay.layer); _gpsReplay.layer = null; }
+  if (_gpsReplay.marker) { _gpsDashboard.map.removeLayer(_gpsReplay.marker); _gpsReplay.marker = null; }
+  const bar = document.getElementById('gps-replay-bar');
+  if (bar) bar.style.display = 'none';
+  // 重新整理一次當前位置
+  _gpsDashFetchAndRender();
 }
 
 function computeKPI(doctorFilter) {

@@ -135,6 +135,8 @@ function onLoginSuccess(loginResponse) {
   if (roleEl) roleEl.textContent = currentUser.role === 'admin' ? '系統管理員' : '一般使用者';
   const adminNav = document.getElementById('nav-users');
   if (adminNav) adminNav.style.display = currentUser.role === 'admin' ? '' : 'none';
+  const gpsNav = document.getElementById('nav-gps');
+  if (gpsNav) gpsNav.style.display = currentUser.role === 'admin' ? '' : 'none';
   if (loginResponse && loginResponse.mustChangePassword) {
     showForceChangePasswordModal();
     return;

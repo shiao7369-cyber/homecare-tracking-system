@@ -885,3 +885,102 @@ textarea.form-input { height: auto; padding: .5rem .75rem; resize: vertical; }
 .upload-zone h3 { margin: 0 0 .75rem; color: #333; font-size: 1.15rem; }
 .upload-hint { color: #888; font-size: .85rem; margin: .25rem 0; }
 .upload-zone .btn { margin-top: 1.25rem; }
+
+/* ===== 即時 GPS 追蹤系統 ===== */
+.gps-control-bar {
+  display: flex; align-items: center; gap: 8px;
+  background: #f8fafc; border: 1px dashed #cbd5e1;
+  border-radius: 8px; padding: 8px 12px; margin-top: 10px;
+}
+.gps-control-bar.gps-active-bar {
+  background: linear-gradient(90deg, #fee2e2 0%, #fef3c7 100%);
+  border: 1px solid #f59e0b;
+}
+.gps-live-info {
+  flex: 1; display: flex; align-items: center; gap: 10px;
+  font-size: .85rem; color: #1f2937; flex-wrap: wrap;
+}
+.gps-live-info strong { color: #dc2626; }
+.gps-pulse {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  animation: gpsPulse 1.5s infinite;
+  flex-shrink: 0;
+}
+@keyframes gpsPulse {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+/* 訪視卡片 GPS 狀態 */
+.route-page-stop.visit-active {
+  background: linear-gradient(90deg, #f0fdf4 0%, #fff 60%);
+  border-left: 4px solid #16a34a;
+}
+.route-page-stop.visit-done {
+  background: #f8fafc;
+  opacity: .7;
+}
+.route-page-stop-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: .7rem; font-weight: 600; margin-left: 6px;
+  vertical-align: middle;
+}
+.route-page-stop-badge.gps-active { background: #dcfce7; color: #15803d; }
+.route-page-stop-badge.gps-done { background: #e0f2fe; color: #0369a1; }
+.route-page-stop-gps {
+  font-size: .8rem; color: #475569; margin-top: 4px;
+  padding: 4px 8px; background: #f1f5f9; border-radius: 6px;
+  display: inline-block;
+}
+.route-page-stop-gps:empty { display: none; }
+
+/* GPS 看板 marker */
+.gps-marker { background: transparent !important; border: none !important; }
+.gps-marker-pin {
+  width: 32px; height: 32px; border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 14px;
+  border: 2px solid #fff; box-shadow: 0 3px 6px rgba(0,0,0,.3);
+}
+.gps-marker-pin > * { transform: rotate(45deg); }
+
+/* 看板成員卡片 */
+.gps-member-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px; border: 1px solid #e2e8f0;
+  border-radius: 8px; cursor: pointer;
+  transition: all .15s;
+}
+.gps-member-card:hover { background: #f8fafc; border-color: #94a3b8; }
+.gps-member-dot {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 1rem; flex-shrink: 0;
+}
+
+/* 軌跡回放控制條 */
+.gps-replay-bar {
+  position: sticky; bottom: 0;
+  display: flex; align-items: center; gap: 8px;
+  background: #fff; border-top: 2px solid #dc2626;
+  padding: 10px; margin-top: 10px;
+  box-shadow: 0 -4px 12px rgba(0,0,0,.1);
+  z-index: 100;
+}
+.gps-replay-bar input[type=range] { accent-color: #dc2626; }
+.gps-replay-bar #gps-replay-time {
+  font-family: monospace; font-weight: 600;
+  color: #dc2626; min-width: 70px; text-align: right;
+}
+
+/* 手機優化 */
+@media (max-width: 600px) {
+  .gps-live-info { font-size: .8rem; gap: 6px; }
+  .gps-control-bar { flex-wrap: wrap; }
+  .gps-replay-bar { flex-wrap: wrap; }
+  .gps-replay-bar input[type=range] { flex-basis: 100%; order: 5; }
+}

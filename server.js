@@ -139,6 +139,20 @@ async function initDatabase() {
         key TEXT PRIMARY KEY,
         value TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS gps_tracks (
+        user_id TEXT NOT NULL,
+        date TEXT NOT NULL,
+        user_name TEXT,
+        active BOOLEAN DEFAULT false,
+        last_lat DOUBLE PRECISION,
+        last_lng DOUBLE PRECISION,
+        last_update TEXT,
+        points JSONB DEFAULT '[]'::jsonb,
+        visit_events JSONB DEFAULT '[]'::jsonb,
+        PRIMARY KEY (user_id, date)
+      );
+      CREATE INDEX IF NOT EXISTS idx_gps_tracks_date_active ON gps_tracks (date, active);
     `);
     console.log('PostgreSQL 資料庫初始化成功');
 
@@ -578,6 +592,162 @@ app.post('/api/data/sync', requireAuth, async (req, res) => {
     res.status(500).json({ error: '資料同步失敗' });
   } finally {
     client.release();
+  }
+});
+
+// ===== 即時 GPS 追蹤 API =====
+// 一人一天一份文件：以 (user_id, date) 當主鍵
+// 軌跡點存 points JSONB，最後位置同步到 last_lat/last_lng 方便團隊看板查詢
+function todayStr() {
+  // 用台北時區的 YYYY-MM-DD
+  const d = new Date();
+  const tw = new Date(d.getTime() + 8 * 60 * 60 * 1000);
+  return tw.toISOString().slice(0, 10);
+}
+
+// 開始追蹤：建立/重啟今天的紀錄
+app.post('/api/gps/start', requireAuth, async (req, res) => {
+  try {
+    const date = todayStr();
+    const userId = req.session.userId;
+    const userName = req.session.displayName || req.session.username;
+    await pool.query(
+      `INSERT INTO gps_tracks (user_id, date, user_name, active, last_update)
+       VALUES ($1, $2, $3, true, $4)
+       ON CONFLICT (user_id, date) DO UPDATE SET
+         active = true, user_name = EXCLUDED.user_name, last_update = EXCLUDED.last_update`,
+      [userId, date, userName, new Date().toISOString()]
+    );
+    auditLog('GPS_START', userId, { ip: req.ip, msg: `${userName} 開始 GPS 追蹤` });
+    res.json({ ok: true, date });
+  } catch (err) {
+    console.error('GPS 開始追蹤失敗:', err);
+    res.status(500).json({ error: '開始追蹤失敗' });
+  }
+});
+
+// 停止追蹤：active=false（保留軌跡與事件）
+app.post('/api/gps/stop', requireAuth, async (req, res) => {
+  try {
+    const date = todayStr();
+    const userId = req.session.userId;
+    await pool.query(
+      `UPDATE gps_tracks SET active = false, last_update = $1 WHERE user_id = $2 AND date = $3`,
+      [new Date().toISOString(), userId, date]
+    );
+    auditLog('GPS_STOP', userId, { ip: req.ip, msg: `停止 GPS 追蹤` });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('GPS 停止失敗:', err);
+    res.status(500).json({ error: '停止追蹤失敗' });
+  }
+});
+
+// 推送批次軌跡點
+app.post('/api/gps/points', requireAuth, async (req, res) => {
+  try {
+    const { points } = req.body;
+    if (!Array.isArray(points) || points.length === 0) {
+      return res.status(400).json({ error: '需要 points 陣列' });
+    }
+    const date = todayStr();
+    const userId = req.session.userId;
+    const userName = req.session.displayName || req.session.username;
+    const last = points[points.length - 1];
+    if (typeof last.lat !== 'number' || typeof last.lng !== 'number') {
+      return res.status(400).json({ error: '無效的座標' });
+    }
+    // append: 用 jsonb_concat
+    await pool.query(
+      `INSERT INTO gps_tracks (user_id, date, user_name, active, last_lat, last_lng, last_update, points)
+       VALUES ($1, $2, $3, true, $4, $5, $6, $7::jsonb)
+       ON CONFLICT (user_id, date) DO UPDATE SET
+         active = true,
+         user_name = EXCLUDED.user_name,
+         last_lat = EXCLUDED.last_lat,
+         last_lng = EXCLUDED.last_lng,
+         last_update = EXCLUDED.last_update,
+         points = gps_tracks.points || $7::jsonb`,
+      [userId, date, userName, last.lat, last.lng, new Date().toISOString(), JSON.stringify(points)]
+    );
+    res.json({ ok: true, count: points.length });
+  } catch (err) {
+    console.error('GPS 點寫入失敗:', err);
+    res.status(500).json({ error: '寫入失敗' });
+  }
+});
+
+// 記錄抵達/離開事件
+app.post('/api/gps/event', requireAuth, async (req, res) => {
+  try {
+    const { caseId, caseName, eventType, lat, lng, scheduleId } = req.body;
+    if (!caseId || !eventType) return res.status(400).json({ error: '缺少必要欄位' });
+    if (!['arrived', 'departed'].includes(eventType)) return res.status(400).json({ error: '事件類型錯誤' });
+
+    const date = todayStr();
+    const userId = req.session.userId;
+    const userName = req.session.displayName || req.session.username;
+    const event = {
+      caseId, caseName: caseName || '',
+      eventType,
+      lat: typeof lat === 'number' ? lat : null,
+      lng: typeof lng === 'number' ? lng : null,
+      scheduleId: scheduleId || null,
+      timestamp: new Date().toISOString(),
+      autoCheckIn: true
+    };
+    await pool.query(
+      `INSERT INTO gps_tracks (user_id, date, user_name, active, last_update, visit_events)
+       VALUES ($1, $2, $3, true, $4, $5::jsonb)
+       ON CONFLICT (user_id, date) DO UPDATE SET
+         user_name = EXCLUDED.user_name,
+         last_update = EXCLUDED.last_update,
+         visit_events = gps_tracks.visit_events || $5::jsonb`,
+      [userId, date, userName, new Date().toISOString(), JSON.stringify([event])]
+    );
+    auditLog('GPS_EVENT', userId, { ip: req.ip, msg: `${eventType === 'arrived' ? '抵達' : '離開'} ${caseName || caseId}` });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('GPS 事件寫入失敗:', err);
+    res.status(500).json({ error: '事件寫入失敗' });
+  }
+});
+
+// 團隊看板：今天所有 active 使用者的當下位置
+app.get('/api/gps/today', requireAuth, async (req, res) => {
+  try {
+    const date = req.query.date || todayStr();
+    // 只回最後位置 + 事件數，不傳 points 陣列省流量
+    const { rows } = await pool.query(
+      `SELECT user_id, user_name, active, last_lat, last_lng, last_update,
+              jsonb_array_length(visit_events) AS event_count,
+              jsonb_array_length(points) AS point_count
+       FROM gps_tracks WHERE date = $1
+       ORDER BY active DESC, last_update DESC`,
+      [date]
+    );
+    res.json({ date, members: rows });
+  } catch (err) {
+    console.error('GPS today 查詢失敗:', err);
+    res.status(500).json({ error: '查詢失敗' });
+  }
+});
+
+// 軌跡回放：取單一使用者單日完整資料
+app.get('/api/gps/history', requireAuth, async (req, res) => {
+  try {
+    const { date, userId } = req.query;
+    if (!date || !userId) return res.status(400).json({ error: '需要 date 與 userId' });
+    const { rows } = await pool.query(
+      `SELECT user_id, user_name, active, last_lat, last_lng, last_update, points, visit_events
+       FROM gps_tracks WHERE date = $1 AND user_id = $2`,
+      [date, userId]
+    );
+    if (rows.length === 0) return res.json({ found: false });
+    res.json({ found: true, ...rows[0] });
+  } catch (err) {
+    console.error('GPS history 查詢失敗:', err);
+    res.status(500).json({ error: '查詢失敗' });
   }
 });
 

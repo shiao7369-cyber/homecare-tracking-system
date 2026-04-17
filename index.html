@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>居家失能個案家庭醫師照護方案 — 個案追蹤管理系統</title>
-<link rel="stylesheet" href="styles.css?v=20260415">
+<link rel="stylesheet" href="styles.css?v=20260417">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
@@ -436,6 +436,9 @@
     <a href="#" class="nav-item" data-page="casemap">
       <span class="nav-icon">🗺️</span><span class="nav-label">個案地圖</span>
     </a>
+    <a href="#" class="nav-item" data-page="gps" id="nav-gps" style="display:none">
+      <span class="nav-icon">📡</span><span class="nav-label">即時定位</span>
+    </a>
     <a href="#" class="nav-item" data-page="alerts">
       <span class="nav-icon">🔔</span><span class="nav-label">警示與待辦</span>
       <span class="nav-badge" id="alert-badge">0</span>
@@ -851,6 +854,9 @@
     <div id="route-page-content"></div>
   </section>
 
+  <!-- ====== 即時定位看板（管理員） ====== -->
+  <section id="page-gps" class="page"></section>
+
   <!-- ====== 警示待辦 ====== -->
   <section id="page-alerts" class="page">
     <div class="alert-categories" id="alert-categories"></div>
@@ -928,9 +934,9 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-<script src="firebase-config.js?v=20260415"></script>
+<script src="firebase-config.js?v=20260417"></script>
 <script src="cases-data.js"></script>
-<script src="data.js?v=20260415"></script>
-<script src="app.js?v=20260415"></script>
+<script src="data.js?v=20260417"></script>
+<script src="app.js?v=20260417"></script>
 </body>
 </html>
